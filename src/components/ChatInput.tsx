@@ -10,7 +10,7 @@ interface ChatInputProps {
 
 export default function ChatInput({ value, onChange, onSubmit, placeholder = 'How can I help you today?' }: ChatInputProps): React.ReactElement {
   return (
-    <div className="relative rounded-lg border border-butler-primary/20 shadow-sm bg-white">
+    <div className="relative mt-2 flex-grow">
       <textarea
         rows={1}
         value={value}
@@ -21,7 +21,7 @@ export default function ChatInput({ value, onChange, onSubmit, placeholder = 'Ho
             onSubmit()
           }
         }}
-        className="block w-full resize-none border-0 bg-transparent py-2.5 px-3.5 text-butler-dark placeholder:text-butler-primary/50 focus:ring-0 sm:text-sm sm:leading-6"
+        className="block w-full resize-none rounded-2xl border-0 bg-butler-accent/10 py-2.5 px-3.5 text-butler-dark placeholder:text-butler-primary/50 focus:bg-butler-accent/20 focus:ring-1 focus:ring-butler-accent/30 focus:outline-none transition-colors duration-200 ease-in-out sm:text-sm sm:leading-6"
         placeholder={placeholder}
       />
       <div className="absolute right-2 bottom-2">

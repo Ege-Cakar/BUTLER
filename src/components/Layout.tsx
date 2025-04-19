@@ -49,8 +49,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               >
                 <Dialog.Panel className="relative mr-16 flex w-full max-w-xs flex-1">
                   <div className="flex grow flex-col gap-y-5 overflow-y-auto bg-butler-primary px-6 pb-4">
-                    <div className="flex h-16 shrink-0 items-center">
-                      <h1 className="text-2xl font-bold text-white">BUTLER</h1>
+                    <div className="flex h-20 shrink-0 items-center pl-2">
+                      <img src="/butler.png" alt="BUTLER" className="h-16 w-auto brightness-0 invert" />
                     </div>
                     <nav className="flex flex-1 flex-col">
                       <ul role="list" className="flex flex-1 flex-col gap-y-7">
@@ -87,8 +87,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         {/* Static sidebar for desktop */}
         <div className={`fixed inset-y-0 z-50 transition-transform duration-300 ${sidebarVisible ? 'translate-x-0' : '-translate-x-full'} hidden lg:flex lg:w-72 lg:flex-col`}>
           <div className="flex grow flex-col gap-y-5 overflow-y-auto bg-butler-primary px-6 pb-4">
-            <div className="flex h-16 shrink-0 items-center">
-              <h1 className="text-2xl font-bold text-white">BUTLER</h1>
+            <div className="flex h-20 shrink-0 items-center pl-2">
+              <img src="/butler.png" alt="BUTLER" className="h-16 w-auto brightness-0 invert" />
             </div>
             <nav className="flex flex-1 flex-col">
               <ul role="list" className="flex flex-1 flex-col gap-y-7">
