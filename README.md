@@ -1,6 +1,6 @@
-# BUTLER
+# Sunflower
 
-BUTLER (Benevolent Untiring Taskmaster for Language, Execution and Results) is your personal AI assistant that helps automate various tasks on your computer.
+Sunflower is your AI best friend that helps automate various tasks on your computer.
 
 ## Features
 
