@@ -1,6 +1,6 @@
 # BUTLER
 
-BUTLER (Benevolent Untiring Taskmaster for Language, Execution and Results) is your personal AI assistant that helps automate various tasks on your computer.
+BUTLER is your AI helper that automates various tasks on your computer.
 
 ## Features
 

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { PaperAirplaneIcon } from '@heroicons/react/24/outline'
+import ChatInput from '../components/ChatInput'
 
 interface Message {
   id: string
@@ -23,47 +23,177 @@ export default function Chat() {
     scrollToBottom()
   }, [messages])
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!input.trim() || isLoading) return
+  // Check for pending message from Dashboard
+  useEffect(() => {
+    const pendingMessage = sessionStorage.getItem('pendingMessage')
+    const autoSubmit = sessionStorage.getItem('autoSubmit')
+    console.log('Checking pending message:', { pendingMessage, autoSubmit })
+    
+    if (pendingMessage) {
+      // First set the input for visual feedback, then clear it
+      setInput(pendingMessage)
+      sessionStorage.removeItem('pendingMessage')
+      
+      // If autoSubmit is set, submit the message immediately
+      if (autoSubmit) {
+        sessionStorage.removeItem('autoSubmit')
+        
+        // Use a timeout to ensure state is updated before submitting
+        setTimeout(() => {
+          console.log('Auto-submitting message:', pendingMessage)
+          
+          const userMessage: Message = {
+            id: crypto.randomUUID(),
+            content: pendingMessage,
+            sender: 'user',
+            timestamp: new Date(),
+            status: 'sent'
+          }
+          
+          // Clear the input field immediately
+          setInput('')
+          setMessages(prev => [...prev, userMessage])
+          setIsLoading(true)
+          
+          // Send to Claude API
+          setTimeout(async () => {
+            try {
+              console.log('Sending auto-submitted message to Claude API...')
+              
+              // Send request to our Claude API endpoint
+              const response = await fetch('http://localhost:3001/api/claude', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  model: 'claude-3-opus-20240229',
+                  messages: [
+                    { role: 'user', content: pendingMessage }
+                  ]
+                })
+              })
+              
+              if (!response.ok) {
+                const errorText = await response.text()
+                console.error('API error:', response.status, errorText)
+                throw new Error(`API error: ${response.status} ${errorText}`)
+              }
+              
+              const data = await response.json()
+              console.log('Claude API response for auto-submit:', data)
+              
+              const responseText = data.content || 'Sorry, I could not generate a response.'
+              console.log('Auto-submit response:', responseText)
+              
+              const butlerMessage: Message = {
+                id: crypto.randomUUID(),
+                content: responseText,
+                sender: 'butler',
+                timestamp: new Date(),
+                status: 'sent'
+              }
+              
+              setMessages(prev => [...prev, butlerMessage])
+            } catch (error) {
+              console.error('Error in auto-submit response:', error)
+              console.error('Error details:', JSON.stringify(error, null, 2))
+              
+              const errorMessage: Message = {
+                id: crypto.randomUUID(),
+                content: 'Sorry, I encountered an error. Please try again. Error: ' + (error instanceof Error ? error.message : 'Unknown error'),
+                sender: 'butler',
+                timestamp: new Date(),
+                status: 'error'
+              }
+              
+              setMessages(prev => [...prev, errorMessage])
+            } finally {
+              setIsLoading(false)
+            }
+          }, 1000)
+        }, 100)
+      }
+    }
+  }, [])
 
+  const handleSubmit = async () => {
+    console.log('handleSubmit called, input:', input, 'isLoading:', isLoading)
+    if (!input.trim() || isLoading) return
+    
+    const trimmedInput = input.trim()
+    console.log('Submitting message:', trimmedInput)
+  
     const userMessage: Message = {
       id: crypto.randomUUID(),
-      content: input.trim(),
+      content: trimmedInput,
       sender: 'user',
       timestamp: new Date(),
       status: 'sent'
     }
-    
-    setMessages(prev => [...prev, userMessage])
+  
+    setMessages(prev => {
+      console.log('Adding user message to messages array')
+      return [...prev, userMessage]
+    })
     setInput('')
     setIsLoading(true)
-
+  
     try {
-      // Simulate BUTLER response
-      await new Promise(resolve => setTimeout(resolve, 1000))
+      console.log('Sending request to Claude API...')
       
+      // Send request to our Claude API endpoint
+      const response = await fetch('http://localhost:3001/api/claude', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'claude-3-opus-20240229',
+          messages: [
+            { role: 'user', content: trimmedInput }
+          ]
+        })
+      })
+      
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error('API error:', response.status, errorText)
+        throw new Error(`API error: ${response.status} ${errorText}`)
+      }
+      
+      const data = await response.json()
+      console.log('Claude API response:', data)
+      
+      const responseText = data.content || 'Sorry, I could not generate a response.'
+  
       const butlerMessage: Message = {
         id: crypto.randomUUID(),
-        content: 'I am here to assist you. How can I help?',
+        content: responseText,
         sender: 'butler',
         timestamp: new Date(),
         status: 'sent'
       }
+  
       setMessages(prev => [...prev, butlerMessage])
     } catch (error) {
+      console.error('Claude API error:', error)
+      console.error('Error details:', JSON.stringify(error, null, 2))
+  
       const errorMessage: Message = {
         id: crypto.randomUUID(),
-        content: 'Sorry, I encountered an error. Please try again.',
+        content: 'Sorry, I encountered an error. Please try again. Error: ' + (error instanceof Error ? error.message : 'Unknown error'),
         sender: 'butler',
         timestamp: new Date(),
         status: 'error'
       }
+  
       setMessages(prev => [...prev, errorMessage])
     } finally {
       setIsLoading(false)
     }
   }
+  
 
   return (
     <div className="flex h-[calc(100vh-12rem)] flex-col">
@@ -76,14 +206,14 @@ export default function Chat() {
             <div
               className={`rounded-lg px-4 py-2 max-w-sm ${
                 message.sender === 'user'
-                  ? 'bg-butler-primary text-white'
+                  ? 'bg-butler-secondary/30 text-butler-dark'
                   : message.status === 'error'
                   ? 'bg-red-100 text-red-900'
-                  : 'bg-gray-100 text-gray-900'
+                  : 'bg-butler-accent/20 text-butler-dark'
               }`}
             >
               <p>{message.content}</p>
-              <p className="text-xs mt-1 opacity-70">
+              <p className="text-xs mt-1 text-butler-dark/70">
                 {message.timestamp.toLocaleTimeString()}
               </p>
             </div>
@@ -92,26 +222,22 @@ export default function Chat() {
         <div ref={messagesEndRef} />
       </div>
       
-      <div className="border-t p-4">
-        <form onSubmit={handleSubmit} className="flex space-x-4">
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={isLoading ? 'Waiting for response...' : 'Type your message...'}
-            disabled={isLoading}
-            className="flex-1 rounded-lg border border-gray-300 px-4 py-2 focus:border-butler-primary focus:outline-none focus:ring-1 focus:ring-butler-primary disabled:opacity-50 disabled:cursor-not-allowed"
-          />
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="rounded-lg bg-butler-primary p-2 text-white hover:bg-butler-accent focus:outline-none focus:ring-2 focus:ring-butler-primary focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Send message"
-            aria-label="Send message"
-          >
-            <PaperAirplaneIcon className="h-5 w-5" />
-          </button>
-        </form>
+      <div className="p-4 border-t">
+        <ChatInput
+          value={input}
+          onChange={setInput}
+          onSubmit={handleSubmit}
+          onTranscription={(text: string) => {
+            console.log('Transcription received in Chat component:', text);
+            setInput(text);
+            // Directly call handleSubmit after a short delay
+            setTimeout(() => {
+              console.log('Auto-submitting from Chat component');
+              handleSubmit();
+            }, 1000);
+          }}
+          placeholder="Type your message..."
+        />
       </div>
     </div>
   )

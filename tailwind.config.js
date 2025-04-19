@@ -6,11 +6,15 @@ export default {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        'playfair': ['Playfair Display', 'serif'],
+      },
       colors: {
         butler: {
-          primary: '#2563eb',
-          secondary: '#475569',
-          accent: '#3b82f6',
+          primary: '#B97724',    // Rich brown
+          secondary: '#3C723E',  // Forest green
+          accent: '#DEAF74',     // Warm beige
+          dark: '#2A1B09',      // Dark brown
         },
       },
     },

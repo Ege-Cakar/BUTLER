@@ -17,6 +17,7 @@ const navigation = [
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sidebarVisible, setSidebarVisible] = useState(true)
   const location = useLocation()
 
   return (
@@ -48,8 +49,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               >
                 <Dialog.Panel className="relative mr-16 flex w-full max-w-xs flex-1">
                   <div className="flex grow flex-col gap-y-5 overflow-y-auto bg-butler-primary px-6 pb-4">
-                    <div className="flex h-16 shrink-0 items-center">
-                      <h1 className="text-2xl font-bold text-white">BUTLER</h1>
+                    <div className="flex h-20 shrink-0 items-center pl-2">
+                      <img src="/butler.png" alt="BUTLER" className="h-16 w-auto brightness-0 invert" />
                     </div>
                     <nav className="flex flex-1 flex-col">
                       <ul role="list" className="flex flex-1 flex-col gap-y-7">
@@ -84,10 +85,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </Transition.Root>
 
         {/* Static sidebar for desktop */}
-        <div className="hidden lg:fixed lg:inset-y-0 lg:z-50 lg:flex lg:w-72 lg:flex-col">
+        <div className={`fixed inset-y-0 z-50 transition-transform duration-300 ${sidebarVisible ? 'translate-x-0' : '-translate-x-full'} hidden lg:flex lg:w-72 lg:flex-col`}>
           <div className="flex grow flex-col gap-y-5 overflow-y-auto bg-butler-primary px-6 pb-4">
-            <div className="flex h-16 shrink-0 items-center">
-              <h1 className="text-2xl font-bold text-white">BUTLER</h1>
+            <div className="flex h-20 shrink-0 items-center pl-2">
+              <img src="/butler.png" alt="BUTLER" className="h-16 w-auto brightness-0 invert" />
             </div>
             <nav className="flex flex-1 flex-col">
               <ul role="list" className="flex flex-1 flex-col gap-y-7">
@@ -117,16 +118,32 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </div>
         </div>
 
-        <div className="lg:pl-72">
+        <div className={`transition-all duration-300 ${sidebarVisible ? 'lg:pl-72' : 'lg:pl-0'}`}>
           <div className="sticky top-0 z-40 flex h-16 shrink-0 items-center gap-x-4 border-b border-gray-200 bg-white px-4 shadow-sm sm:gap-x-6 sm:px-6 lg:px-8">
-            <button
-              type="button"
-              className="-m-2.5 p-2.5 text-gray-700 lg:hidden"
-              onClick={() => setSidebarOpen(true)}
-            >
-              <span className="sr-only">Open sidebar</span>
-              <Bars3Icon className="h-6 w-6" aria-hidden="true" />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="-m-2.5 p-2.5 text-gray-700 lg:hidden"
+                onClick={() => setSidebarOpen(true)}
+              >
+                <span className="sr-only">Open sidebar</span>
+                <Bars3Icon className="h-6 w-6" aria-hidden="true" />
+              </button>
+
+              {/* Desktop sidebar toggle */}
+              <button
+                type="button"
+                className="hidden lg:block -m-2.5 p-2.5 text-gray-700 hover:text-butler-primary transition-colors duration-200"
+                onClick={() => setSidebarVisible(!sidebarVisible)}
+              >
+                <span className="sr-only">{sidebarVisible ? 'Hide' : 'Show'} sidebar</span>
+                {sidebarVisible ? (
+                  <XMarkIcon className="h-6 w-6" aria-hidden="true" />
+                ) : (
+                  <Bars3Icon className="h-6 w-6" aria-hidden="true" />
+                )}
+              </button>
+            </div>
           </div>
 
           <main className="py-10">
