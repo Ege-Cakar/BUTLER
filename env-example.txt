@@ -1,0 +1,8 @@
+# Environment Variables for BUTLER
+# Copy these lines to your .env.local file
+
+# Claude API Key
+CLAUDE_API_KEY=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
+
+# OpenAI API Key - Make sure there are no spaces around the equals sign
+OPENAI_API_KEY=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
