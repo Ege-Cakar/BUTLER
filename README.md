@@ -1,6 +1,6 @@
-# Sunflower
+# BUTLER
 
-Sunflower is your AI best friend that helps automate various tasks on your computer.
+BUTLER is your AI helper that automates various tasks on your computer.
 
 ## Features
 
