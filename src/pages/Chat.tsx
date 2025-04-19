@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { PaperAirplaneIcon } from '@heroicons/react/24/outline'
+import ChatInput from '../components/ChatInput'
 
 interface Message {
   id: string
@@ -23,8 +23,35 @@ export default function Chat() {
     scrollToBottom()
   }, [messages])
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
+  // Check for pending message from Dashboard
+  useEffect(() => {
+    const pendingMessage = sessionStorage.getItem('pendingMessage')
+    const autoSubmit = sessionStorage.getItem('autoSubmit')
+    
+    if (pendingMessage) {
+      setInput(pendingMessage)
+      sessionStorage.removeItem('pendingMessage')
+      
+      // If autoSubmit is set, submit the message immediately
+      if (autoSubmit) {
+        sessionStorage.removeItem('autoSubmit')
+        const message: Message = {
+          id: crypto.randomUUID(),
+          content: pendingMessage,
+          sender: 'user',
+          timestamp: new Date(),
+          status: 'sending'
+        }
+        setMessages(prev => [...prev, message])
+        setInput('')
+        setIsLoading(true)
+        // Add your message handling logic here
+      }
+    }
+  }, [])
+
+  const handleSubmit = async () => {
+
     if (!input.trim() || isLoading) return
 
     const userMessage: Message = {
@@ -76,14 +103,14 @@ export default function Chat() {
             <div
               className={`rounded-lg px-4 py-2 max-w-sm ${
                 message.sender === 'user'
-                  ? 'bg-butler-primary text-white'
+                  ? 'bg-butler-secondary/30 text-butler-dark'
                   : message.status === 'error'
                   ? 'bg-red-100 text-red-900'
-                  : 'bg-gray-100 text-gray-900'
+                  : 'bg-butler-accent/20 text-butler-dark'
               }`}
             >
               <p>{message.content}</p>
-              <p className="text-xs mt-1 opacity-70">
+              <p className="text-xs mt-1 text-butler-dark/70">
                 {message.timestamp.toLocaleTimeString()}
               </p>
             </div>
@@ -92,26 +119,13 @@ export default function Chat() {
         <div ref={messagesEndRef} />
       </div>
       
-      <div className="border-t p-4">
-        <form onSubmit={handleSubmit} className="flex space-x-4">
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={isLoading ? 'Waiting for response...' : 'Type your message...'}
-            disabled={isLoading}
-            className="flex-1 rounded-lg border border-gray-300 px-4 py-2 focus:border-butler-primary focus:outline-none focus:ring-1 focus:ring-butler-primary disabled:opacity-50 disabled:cursor-not-allowed"
-          />
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="rounded-lg bg-butler-primary p-2 text-white hover:bg-butler-accent focus:outline-none focus:ring-2 focus:ring-butler-primary focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Send message"
-            aria-label="Send message"
-          >
-            <PaperAirplaneIcon className="h-5 w-5" />
-          </button>
-        </form>
+      <div className="p-4 border-t">
+        <ChatInput
+          value={input}
+          onChange={setInput}
+          onSubmit={handleSubmit}
+          placeholder="Type your message..."
+        />
       </div>
     </div>
   )
