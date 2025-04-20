@@ -11,11 +11,11 @@ export default function Projects() {
   return (
     <div>
       <div className="border-b border-gray-200 pb-5 sm:flex sm:items-center sm:justify-between">
-        <h2 className="text-base font-semibold leading-6 text-gray-900">Projects</h2>
+        <h2 className="text-xl font-cursive leading-6 text-sunflower-dark">Projects</h2>
         <div className="mt-3 sm:ml-4 sm:mt-0">
           <button
             type="button"
-            className="inline-flex items-center rounded-md bg-butler-primary px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-butler-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-butler-primary"
+            className="inline-flex items-center rounded-md bg-button px-3 py-2 text-sm font-cursive text-sunflower-dark shadow-sm hover:bg-sunflower-accent hover:text-sunflower-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sunflower-primary"
           >
             Create new project
           </button>
@@ -27,19 +27,19 @@ export default function Projects() {
           <li key={project.id} className="relative flex justify-between gap-x-6 py-5 hover:bg-gray-50">
             <div className="flex min-w-0 gap-x-4">
               <div className="h-12 w-12 flex-none rounded-lg bg-gray-50 flex items-center justify-center">
-                <FolderIcon className="h-6 w-6 text-gray-400" aria-hidden="true" />
+                <FolderIcon className="h-6 w-6 text-black" aria-hidden="true" />
               </div>
               <div className="min-w-0 flex-auto">
-                <p className="text-sm font-semibold leading-6 text-gray-900">
+                <p className="text-sm font-semibold leading-6 text-black">
                   <a href="#" className="hover:underline">
                     {project.name}
                   </a>
                 </p>
-                <p className="mt-1 text-xs leading-5 text-gray-500">{project.description}</p>
+                <p className="mt-1 text-xs leading-5 text-black">{project.description}</p>
               </div>
             </div>
             <div className="flex items-center gap-x-4">
-              <ChevronRightIcon className="h-5 w-5 flex-none text-gray-400" aria-hidden="true" />
+              <ChevronRightIcon className="h-5 w-5 flex-none text-black" aria-hidden="true" />
             </div>
           </li>
         ))}

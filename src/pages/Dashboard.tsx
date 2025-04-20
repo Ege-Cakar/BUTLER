@@ -27,20 +27,12 @@ export default function Dashboard(): React.ReactElement {
           </h1>
       </div>
 
-      {/* Input area positioned higher */}
       <div className="max-w-3xl mx-auto w-full px-4 mt-8">
         <ChatInput
           value={input}
           onChange={setInput}
           onSubmit={handleSubmit}
         />
-      </div>
-
-      {/* Main content area */}
-      <div className="flex-1 overflow-hidden mt-8">
-        <div className="max-w-3xl mx-auto px-4">
-          {/* Add any additional dashboard content here */}
-        </div>
       </div>
     </div>
   )

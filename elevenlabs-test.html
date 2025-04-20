@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ElevenLabs API Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 10px 0;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        pre {
+            background-color: #f5f5f5;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        .log {
+            margin-top: 20px;
+            border: 1px solid #ddd;
+            padding: 10px;
+            height: 300px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>ElevenLabs API Test</h1>
+    
+    <div>
+        <h2>Direct API Test</h2>
+        <p>This will test the ElevenLabs API directly from the browser using your API key.</p>
+        <input type="text" id="apiKey" placeholder="Enter your ElevenLabs API key" style="width: 300px;">
+        <input type="text" id="voiceId" value="nPczCjzI2devNBz1zQrb" placeholder="Voice ID">
+        <button id="testDirectBtn">Test Direct API</button>
+    </div>
+
+    <div>
+        <h2>Server API Test</h2>
+        <p>This will test the ElevenLabs API through your server endpoint.</p>
+        <button id="testServerBtn">Test Server API</button>
+    </div>
+
+    <div>
+        <h2>Audio Playback Test</h2>
+        <p>This will test if your browser can play audio.</p>
+        <button id="testAudioBtn">Test Audio Playback</button>
+        <audio id="testAudio" controls style="display: none;"></audio>
+    </div>
+
+    <div class="log" id="logOutput">
+        <strong>Logs will appear here</strong>
+    </div>
+
+    <script>
+        const logOutput = document.getElementById('logOutput');
+        
+        function log(message, isError = false) {
+            const entry = document.createElement('div');
+            entry.style.color = isError ? 'red' : 'black';
+            entry.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
+            logOutput.appendChild(entry);
+            logOutput.scrollTop = logOutput.scrollHeight;
+        }
+
+        // Test direct API
+        document.getElementById('testDirectBtn').addEventListener('click', async () => {
+            const apiKey = document.getElementById('apiKey').value;
+            const voiceId = document.getElementById('voiceId').value;
+            
+            if (!apiKey) {
+                log('Please enter your ElevenLabs API key', true);
+                return;
+            }
+
+            log(`Testing direct API call with voice ID: ${voiceId}`);
+            
+            try {
+                // First test if we can get the voices list
+                log('Fetching voices list...');
+                const voicesResponse = await fetch('https://api.elevenlabs.io/v1/voices', {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json',
+                        'xi-api-key': apiKey
+                    }
+                });
+
+                if (!voicesResponse.ok) {
+                    const errorText = await voicesResponse.text();
+                    log(`API Error (${voicesResponse.status}): ${errorText}`, true);
+                    return;
+                }
+
+                const voicesData = await voicesResponse.json();
+                log(`Success! Found ${voicesData.voices.length} voices.`);
+                
+                // Now test text-to-speech
+                log('Testing text-to-speech...');
+                const ttsResponse = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'audio/mpeg',
+                        'Content-Type': 'application/json',
+                        'xi-api-key': apiKey
+                    },
+                    body: JSON.stringify({
+                        text: 'This is a test of the ElevenLabs API.',
+                        model_id: 'eleven_monolingual_v1',
+                        voice_settings: {
+                            stability: 0.5,
+                            similarity_boost: 0.75
+                        }
+                    })
+                });
+
+                if (!ttsResponse.ok) {
+                    const errorText = await ttsResponse.text();
+                    log(`TTS API Error (${ttsResponse.status}): ${errorText}`, true);
+                    return;
+                }
+
+                log('TTS API call successful! Playing audio...');
+                
+                // Convert the response to an audio blob
+                const audioBlob = await ttsResponse.blob();
+                log(`Received audio blob of size: ${audioBlob.size} bytes`);
+                
+                // Create an audio URL and play it
+                const audioUrl = URL.createObjectURL(audioBlob);
+                const audio = document.getElementById('testAudio');
+                audio.src = audioUrl;
+                audio.style.display = 'block';
+                
+                // Play the audio
+                try {
+                    await audio.play();
+                    log('Audio playback started successfully');
+                } catch (playError) {
+                    log(`Audio playback error: ${playError.message}`, true);
+                }
+                
+            } catch (error) {
+                log(`Error: ${error.message}`, true);
+            }
+        });
+
+        // Test server API
+        document.getElementById('testServerBtn').addEventListener('click', async () => {
+            log('Testing server API endpoint...');
+            
+            try {
+                const response = await fetch('http://localhost:3001/api/elevenlabs/tts', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        text: 'This is a test of the server API endpoint.',
+                        voiceId: document.getElementById('voiceId').value
+                    })
+                });
+
+                if (!response.ok) {
+                    let errorDetails;
+                    try {
+                        errorDetails = await response.json();
+                        log(`Server API Error (${response.status}): ${JSON.stringify(errorDetails)}`, true);
+                    } catch (e) {
+                        const errorText = await response.text();
+                        log(`Server API Error (${response.status}): ${errorText}`, true);
+                    }
+                    return;
+                }
+
+                log('Server API call successful! Playing audio...');
+                
+                // Convert the response to an audio blob
+                const audioBlob = await response.blob();
+                log(`Received audio blob of size: ${audioBlob.size} bytes`);
+                
+                // Create an audio URL and play it
+                const audioUrl = URL.createObjectURL(audioBlob);
+                const audio = document.getElementById('testAudio');
+                audio.src = audioUrl;
+                audio.style.display = 'block';
+                
+                // Play the audio
+                try {
+                    await audio.play();
+                    log('Audio playback started successfully');
+                } catch (playError) {
+                    log(`Audio playback error: ${playError.message}`, true);
+                }
+                
+            } catch (error) {
+                log(`Error: ${error.message}`, true);
+            }
+        });
+
+        // Test audio playback
+        document.getElementById('testAudioBtn').addEventListener('click', async () => {
+            log('Testing basic audio playback...');
+            
+            try {
+                // Create a simple audio context and oscillator
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const oscillator = audioContext.createOscillator();
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(440, audioContext.currentTime); // A4 note
+                oscillator.connect(audioContext.destination);
+                oscillator.start();
+                
+                log('Audio playback started successfully');
+                
+                // Stop after 1 second
+                setTimeout(() => {
+                    oscillator.stop();
+                    log('Audio playback stopped');
+                }, 1000);
+                
+            } catch (error) {
+                log(`Audio playback error: ${error.message}`, true);
+            }
+        });
+    </script>
+</body>
+</html>

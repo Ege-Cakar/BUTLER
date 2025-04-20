@@ -56,7 +56,7 @@ export default function ChatInput({ value, onChange, onSubmit, onTranscription, 
         className="block w-full resize-none rounded-2xl border-0 bg-butler-accent/10 py-2.5 px-3.5 text-butler-dark placeholder:text-butler-primary/50 focus:bg-butler-accent/20 focus:ring-1 focus:ring-butler-accent/30 focus:outline-none transition-colors duration-200 ease-in-out sm:text-sm sm:leading-6"
         placeholder={placeholder}
       />
-      <div className="absolute right-2 bottom-2 flex space-x-2 items-center">
+      <div className="absolute right-2 top-1/2 -translate-y-1/2 flex space-x-2 items-center">
         <AudioRecorder onTranscriptionComplete={handleTranscription} />
         <button
           type="button"
