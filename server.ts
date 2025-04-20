@@ -79,7 +79,7 @@ app.post('/api/claude', async (req, res) => {
       return res.status(500).json({ error: 'TEST-NODEMON: Claude API key not configured' });
     }
 
-    const { messages, model = 'claude-3-opus-20240229' } = req.body;
+    const { messages, model = 'claude-3-7-sonnet-20250219' } = req.body;
 
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: 'Invalid messages format' });
