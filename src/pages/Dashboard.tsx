@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useContext } from 'react'
 import { useNavigate } from 'react-router-dom'
 import ChatInput from '../components/ChatInput'
 
@@ -30,22 +30,22 @@ export default function Dashboard(): React.ReactElement {
           </h1>
       </div>
 
-      <div className="max-w-3xl mx-auto w-full px-4 mt-8">
-        <ChatInput
-          value={input}
-          onChange={setInput}
-          onSubmit={handleSubmit}
-          onTranscription={(text: string) => {
-            console.log('[DEBUG] Dashboard received transcription:', text)
-            setInput(text)
-            setFromSpeech(true) // Still good for UI feedback etc.
-            // Auto-submit with speech flag set to true
-            setTimeout(() => {
-              handleSubmit(true) // Pass true to indicate this came from speech
-            }, 500)
-          }}
-        />
+      <div className="p-4">
+            <ChatInput
+              value={input}
+              onChange={setInput}
+              onSubmit={handleSubmit}
+              onTranscription={(text: string) => {
+                console.log('[DEBUG] Dashboard received transcription:', text)
+                setInput(text)
+                setFromSpeech(true) // Still good for UI feedback etc.
+                // Auto-submit with speech flag set to true
+                setTimeout(() => {
+                  handleSubmit(true) // Pass true to indicate this came from speech
+                }, 500)
+              }}
+            />
+          </div>
       </div>
-    </div>
   )
 }

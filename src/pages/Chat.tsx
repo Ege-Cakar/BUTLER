@@ -537,7 +537,7 @@ export default function Chat() {
       <div ref={messagesEndRef} />
     </div>
     
-    <div className="p-4 border-t">
+    <div className="p-4">
       <ChatInput
         value={input}
         onChange={setInput}
