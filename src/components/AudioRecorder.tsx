@@ -131,11 +131,16 @@ const AudioRecorder: React.FC<AudioRecorderProps> = ({ onTranscriptionComplete }
   };
 
   return (
-    <div>
-      {errorMessage && <div className="text-red-500 text-sm mb-2">{errorMessage}</div>}
+    <div className="relative">
+      {/* Error message as an absolute positioned tooltip */}
+      {errorMessage && (
+        <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 bg-red-100 text-red-700 px-2 py-1 rounded text-xs whitespace-nowrap shadow-md">
+          {errorMessage}
+        </div>
+      )}
       <button
         onClick={toggleRecording}
-        className={`p-2 rounded-full focus:outline-none transition-colors ${isRecording 
+        className={`w-8 h-8 flex items-center justify-center rounded-full focus:outline-none transition-colors ${isRecording 
           ? 'bg-red-500 hover:bg-red-600 text-white' 
           : 'bg-butler-accent/10 hover:bg-butler-accent/20 text-butler-accent'}`}
         aria-label={isRecording ? 'Stop recording' : 'Start recording'}

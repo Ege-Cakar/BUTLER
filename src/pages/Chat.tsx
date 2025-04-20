@@ -40,7 +40,10 @@ export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [fromSpeech, setFromSpeech] = useState(false)
+  const [audioSrc, setAudioSrc] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const audioRef = useRef<HTMLAudioElement>(null)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -56,12 +59,20 @@ export default function Chat() {
   useEffect(() => {
     const pendingMessage = sessionStorage.getItem('pendingMessage')
     const autoSubmit = sessionStorage.getItem('autoSubmit')
-    console.log('Checking pending message:', { pendingMessage, autoSubmit })
+    const speechInput = sessionStorage.getItem('fromSpeech') === 'true'
+    console.log('Checking pending message:', { pendingMessage, autoSubmit, speechInput })
     
     if (pendingMessage) {
       // First set the input for visual feedback, then clear it
       setInput(pendingMessage)
       sessionStorage.removeItem('pendingMessage')
+      
+      // Set the fromSpeech flag based on sessionStorage
+      if (speechInput) {
+        console.log('[DEBUG] Message was from speech input, setting fromSpeech flag')
+        setFromSpeech(true)
+        sessionStorage.removeItem('fromSpeech')
+      }
       
       // If autoSubmit is set, submit the message immediately
       if (autoSubmit) {
@@ -213,7 +224,7 @@ export default function Chat() {
     if (!input.trim() || isLoading) return
     
     const trimmedInput = input.trim()
-    console.log('Submitting message:', trimmedInput)
+    console.log('Submitting message:', trimmedInput, 'fromSpeech:', fromSpeech)
     
     // Check if input is a command
     if (trimmedInput.startsWith('/')) {
@@ -303,7 +314,7 @@ export default function Chat() {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: 'claude-3-opus-20240229',
+          model: 'claude-3-7-sonnet-20250219',
           messages: [
             { role: 'user', content: trimmedInput }
           ]
@@ -328,8 +339,7 @@ export default function Chat() {
       const responseText = Array.isArray(content)
         ? content[0].text
         : 'Sorry, I could not generate a response.'
-  
-      // Create a message with a unique ID
+        // Create a message with a unique ID
       const butlerId = crypto.randomUUID();
       
       // Add empty message that will be streamed into
@@ -354,7 +364,7 @@ export default function Chat() {
             )
           );
           
-          // When we reach the end, update status to sent
+          // When we reach the end, update status to sent and handle text-to-speech
           if (i === responseText.length - 1) {
             setMessages(prev => 
               prev.map(msg => 
@@ -363,6 +373,50 @@ export default function Chat() {
                   : msg
               )
             );
+            
+            // If the user message was from speech, convert the response to speech
+            if (fromSpeech) {
+              try {
+                console.log('[DEBUG] Converting response to speech via ElevenLabs...')
+                console.log('[DEBUG] Response text length:', responseText.length)
+                console.log('[DEBUG] Response text preview:', responseText.substring(0, 100) + '...')
+                
+                console.time('[DEBUG] ElevenLabs API call')
+                fetch('http://localhost:3001/api/elevenlabs/tts', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({
+                    text: responseText,
+                    voiceId: 'nPczCjzI2devNBz1zQrb' // Default voice ID
+                  })
+                })
+                .then(ttsResponse => {
+                  console.timeEnd('[DEBUG] ElevenLabs API call')
+                  console.log('[DEBUG] ElevenLabs API response status:', ttsResponse.status)
+                  
+                  if (ttsResponse.ok) {
+                    return ttsResponse.blob()
+                  } else {
+                    throw new Error(`TTS API error: ${ttsResponse.status}`)
+                  }
+                })
+                .then(audioBlob => {
+                  console.log('[DEBUG] Audio blob size:', audioBlob.size, 'bytes')
+                  const audioUrl = URL.createObjectURL(audioBlob)
+                  setAudioSrc(audioUrl)
+                })
+                .catch(error => {
+                  console.error('[DEBUG] TTS error:', error)
+                })
+              } catch (ttsError) {
+                console.error('TTS error:', ttsError)
+              }
+            }
+            
+            // Reset the fromSpeech flag
+            setFromSpeech(false)
           }
         }, i * 15); // 15ms per character
       }
@@ -389,8 +443,19 @@ export default function Chat() {
 
   return (
     <div className="flex h-[calc(100vh-12rem)] flex-col">
-    <div className="flex-1 overflow-y-auto p-4 space-y-4 relative">
-      {/* Regular messages */}
+      {/* Audio player for TTS responses */}
+      {audioSrc && (
+        <audio 
+          ref={audioRef}
+          src={audioSrc} 
+          className="hidden" // Hidden but functional
+          controls={false} 
+          autoPlay={true}
+          onEnded={() => setAudioSrc(null)}
+        />
+      )}
+      <div className="flex-1 overflow-y-auto p-4 space-y-4 relative">
+        {/* Regular messages */}
       {messages.map((message) => (
         <div
           key={message.id}
@@ -427,6 +492,8 @@ export default function Chat() {
         onTranscription={(text: string) => {
           console.log('Transcription received in Chat component:', text);
           setInput(text);
+          // Set the fromSpeech flag to true
+          setFromSpeech(true);
           // Directly call handleSubmit after a short delay
           setTimeout(() => {
             console.log('Auto-submitting from Chat component');
