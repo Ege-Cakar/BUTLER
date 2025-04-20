@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "builtin": {
+      "type": "builtin",
+      "command": "self",
+      "args": []
+    },
+    "memory": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory",
+        "--memory-path", 
+        "/Users/egecakar/Documents/Projects/BUTLER/memory.jsonl"
+      ]
+    }
+  }
+}
