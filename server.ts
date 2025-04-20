@@ -2,21 +2,95 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import axios from 'axios';
-import fs from 'fs';
+import fsPromises from 'fs/promises'; // Use promise-based fs
+import fs from 'fs'; // Import standard fs for createReadStream
 import path from 'path';
 import FormData from 'form-data';
 import fetch from 'node-fetch';
+import { mcpManager, ServerConfig } from './src/utils/mcpManager'; // Import ServerConfig
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+// Get __dirname equivalent for ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // Load environment variables from .env.local
 dotenv.config({ path: '.env.local' });
 
+// Set to false to disable debug logging
+const DEBUG_MODE = false;
+
+// Get current date information for the system prompt
+const currentDate = new Date();
+const formattedDate = new Intl.DateTimeFormat('en-US', {
+  month: 'long',
+  day: 'numeric',
+  year: 'numeric'
+}).format(currentDate);
+const currentYear = currentDate.getFullYear();
+
 // Debug environment variables
-console.log('[DEBUG] Environment variables loaded from:', process.env.DOTENV_PATH || '.env.local');
-console.log('[DEBUG] CLAUDE_API_KEY present:', !!process.env.CLAUDE_API_KEY);
+if (DEBUG_MODE) {
+  console.log('[DEBUG] Environment variables loaded from:', process.env.DOTENV_PATH || '.env.local');
+  console.log('[DEBUG] CLAUDE_API_KEY present:', !!process.env.CLAUDE_API_KEY);
+}
 if (process.env.CLAUDE_API_KEY) {
   process.env.CLAUDE_API_KEY = process.env.CLAUDE_API_KEY.trim();
-  console.log('[DEBUG] CLAUDE_API_KEY format:', process.env.CLAUDE_API_KEY.substring(0, 5) + '...');
+  if (DEBUG_MODE) {
+    console.log('[DEBUG] CLAUDE_API_KEY format:', process.env.CLAUDE_API_KEY.substring(0, 5) + '...');
+  }
 }
+
+// System prompt for Claude
+const SYSTEM_PROMPT = `You are BUTLER, an agent designed to help users complete tasks on their computer. Follow these guidelines when assisting users with computer use:
+
+Core Functionality:
+Utilize available tools to help users complete computer tasks.
+Verify each action with screenshots before proceeding to the next step.
+Prioritize keyboard shortcuts whenever possible for efficiency.
+
+Google Calendar Integration:
+You have access to the user's Google Calendar through the Google Calendar MCP server.
+You can create, view, update, and delete calendar events using the available tools.
+When the user asks about their schedule, meetings, or events, use the Google Calendar tools to provide accurate information.
+You can suggest creating calendar events when the user mentions appointments, meetings, or deadlines.
+The current date is ${formattedDate}. Always use this as the reference for "today" when working with calendar events.
+When creating or referencing events, ensure you're using the correct year (${currentYear}) in your queries and responses.
+
+Workflow Protocol:
+Analyze the task requested by the user.
+Break down complex tasks into clear, sequential steps.
+For each step:
+
+    Call the tools with exact commands or clicks needed.
+    Request a screenshot after the action is completed.
+    Verify the result from the screenshot before proceeding.
+    If the result doesn't match expectations, try to troubleshoot.
+    Confirm task completion with a final verification screenshot.
+In terms of memory, follow these steps for each interaction:
+
+1. User Identification:
+   - You should assume that you are interacting with default_user
+   - If you have not identified default_user, proactively try to do so.
+
+2. Memory Retrieval:
+   - Always retrieve all relevant information from your knowledge graph
+   - Always refer to your knowledge graph as your "memory"
+
+3. Memory
+   - While conversing with the user, be attentive to any new information that falls into these categories:
+     a) Basic Identity (age, gender, location, job title, education level, etc.)
+     b) Behaviors (interests, habits, etc.)
+     c) Preferences (communication style, preferred language, etc.)
+     d) Goals (goals, targets, aspirations, etc.)
+     e) Relationships (personal and professional relationships up to 3 degrees of separation)
+
+4. Memory Update:
+   - If any new information was gathered during the interaction, update your memory as follows:
+     a) Create entities for recurring organizations, people, and significant events
+     b) Connect them to the current entities using relations
+     c) Store facts about them as observations`;
 
 const app = express();
 const port = 3001;
@@ -41,7 +115,7 @@ app.post('/api/speech-to-text', async (req, res) => {
     const buffer = Buffer.from(base64Data, 'base64');
     const tempFilePath = path.join(__dirname, `temp_audio_${Date.now()}.webm`);
 
-    fs.writeFileSync(tempFilePath, buffer);
+    await fsPromises.writeFile(tempFilePath, buffer);
 
     const formData = new FormData();
     formData.append('file', fs.createReadStream(tempFilePath));
@@ -58,39 +132,133 @@ app.post('/api/speech-to-text', async (req, res) => {
       }
     );
 
-    fs.unlinkSync(tempFilePath);
+    await fsPromises.unlink(tempFilePath);
 
     return res.json(openaiResponse.data);
   } catch (error) {
     console.error('Speech-to-text error:', error);
     return res.status(500).json({ error: 'Failed to convert speech to text' });
+  } 
+});
+
+// MCP Tool implementations
+const mcpTools = {
+  // Take a screenshot of the current screen
+  async take_screenshot() {
+    // In a real implementation, this would use a native module or system command
+    console.log('[MCP] Taking screenshot...');
+    
+    // Mock implementation - would be replaced with real screenshot logic
+    return {
+      success: true,
+      message: 'Screenshot taken successfully',
+      path: `/tmp/screenshot_${Date.now()}.png`
+    };
+  },
+  
+  // Search for files on the system
+  async search_files(params: { query: string, path?: string }) {
+    const { query, path = '/' } = params;
+    console.log(`[MCP] Searching for files matching "${query}" in "${path}"...`);
+    
+    // Mock implementation - would be replaced with real file search logic
+    return {
+      success: true,
+      results: [
+        { name: `file1-${query}.txt`, path: `${path}/file1-${query}.txt` },
+        { name: `file2-${query}.txt`, path: `${path}/file2-${query}.txt` }
+      ]
+    };
+  },
+  
+  // Execute a shell command
+  async execute_command(params: { command: string, cwd?: string }) {
+    const { command, cwd = '/' } = params;
+    console.log(`[MCP] Executing command: "${command}" in directory "${cwd}"`);
+    
+    // Mock implementation - would be replaced with real command execution
+    return {
+      success: true,
+      output: `Executed command: ${command}\nOutput: Command executed successfully`,
+      exit_code: 0
+    };
   }
+};
+
+// MCP Tool execution endpoint - This handles the built-in tools
+app.post('/api/mcp/execute', async (req, res) => {
+  try {
+    const { toolCall } = req.body;
+    
+    if (!toolCall || !toolCall.name) {
+      return res.status(400).json({ error: 'Invalid tool call format' });
+    }
+    
+    const { name, arguments: args } = toolCall;
+    
+    console.log(`[MCP] Executing tool: ${name} with arguments:`, args);
+    
+    // Check if the tool exists
+    if (!(name in mcpTools)) {
+      console.error(`[MCP] Tool not found: ${name}`);
+      return res.status(404).json({ error: `Tool '${name}' not found` });
+    }
+    
+    // Execute the tool
+    const result = await (mcpTools as any)[name](args);
+    
+    console.log(`[MCP] Tool execution result:`, result);
+    
+    return res.json({ result: JSON.stringify(result) });
+  } catch (error: any) {
+    console.error('[MCP] Tool execution error:', error);
+    return res.status(500).json({
+      error: 'Failed to execute tool',
+      details: error.message || 'Unknown error'
+    });
+  }
+});
+
+// MCP Tools listing endpoint - Returns the tools provided by this server
+app.get('/api/mcp/tools', (_req, res) => {
+  // Respond with an empty tools array (removed all built-in tools)
+  res.json({
+    tools: []
+  });
 });
 
 // Claude API endpoint
 app.post('/api/claude', async (req, res) => {
-  console.log('[DEBUG] Claude API endpoint called');
+  if (DEBUG_MODE) console.log('[DEBUG] Claude API endpoint called');
+  
   try {
     const apiKey = process.env.CLAUDE_API_KEY?.trim();
-    console.log('[DEBUG] Claude API key format:', apiKey ? apiKey.substring(0, 5) + '...' : 'not found');
+    if (DEBUG_MODE) console.log('[DEBUG] Claude API key format:', apiKey ? apiKey.substring(0, 5) + '...' : 'not found');
     
     if (!apiKey) {
       console.error('[ERROR] Claude API key not configured or empty');
-      return res.status(500).json({ error: 'DEBUG Claude API key not configured' });
+      return res.status(500).json({ error: 'TEST-NODEMON: Claude API key not configured' });
     }
 
-    const { messages, model = 'claude-3-opus-20240229' } = req.body;
+    const { messages, model = 'claude-3-7-sonnet-20250219' } = req.body;
 
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: 'Invalid messages format' });
     }
 
-    const response = await axios.post(
+    // Get tools from MCP Manager
+    const tools = mcpManager.getToolsForClaude();
+    if (DEBUG_MODE) console.log(`[DEBUG] Sending ${tools.length} tools to Claude`);
+
+    if (DEBUG_MODE) console.log('[DEBUG] Making initial Claude API call');
+    let claudeResponse = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
         model,
         messages,
         max_tokens: 4000,
+        system: SYSTEM_PROMPT,
+        tools,
       },
       {
         headers: {
@@ -101,10 +269,132 @@ app.post('/api/claude', async (req, res) => {
       }
     );
 
-    return res.json(response.data);
-  } catch (error) {
-    console.error('Claude API error:', error.response?.data || error.message);
-    return res.status(500).json({ error: 'Failed to communicate with Claude API' });
+    let responseData = claudeResponse.data;
+    let allMessages = [...messages];
+    
+    // Process tool calls if any are present in the response
+    let toolCallCount = 0;
+    const toolDebugInfo: string[] = [];  // Store debug information about tool calls
+    
+    while (toolCallCount < 10) { // Limit to prevent infinite loops
+      if (!responseData.content || !Array.isArray(responseData.content)) {
+        break;
+      }
+      
+      // Filter out tool calls with undefined names
+      const validContent = responseData.content.map(item => {
+        const incomingToolName = item.tool_name || item.name;
+        if (item.type === 'tool_use' && !incomingToolName) {
+          // Convert undefined tool call to text message explaining the issue
+          toolDebugInfo.push(`[DEBUG] Removed undefined tool call`);
+          return {
+            type: 'text',
+            text: 'ERROR: Attempted to use a tool but the tool name was undefined.'
+          };
+        }
+        // Normalize property: ensure tool_use objects always have tool_name for downstream logic
+        if (item.type === 'tool_use' && incomingToolName && !item.tool_name) {
+          return { ...item, tool_name: incomingToolName };
+        }
+        return item;
+      });
+      
+      // Process any valid tool calls in the response
+      const { toolResults, hasToolCalls } = await mcpManager.processToolCalls(validContent);
+      
+      if (!hasToolCalls) {
+        break; // No tool calls, we're done
+      }
+      
+      // Add debug info for each tool call
+      for (const item of responseData.content) {
+        if (item.type === 'tool_use') {
+          const tName = item.tool_name || item.name;
+          if (!tName) {
+            toolDebugInfo.push(`[DEBUG] Skipped undefined tool call`);
+            continue; // Skip undefined tool calls
+          }
+          const tInput = (item.tool_input ?? item.input ?? item.arguments);
+          if (!tInput) {
+            toolDebugInfo.push(`[DEBUG] Tool called without input: ${tName}`);
+          } else {
+            toolDebugInfo.push(`[DEBUG] Tool called: ${tName} with args: ${JSON.stringify(tInput)}`);
+          }
+        }
+      }
+      
+      // Add debug info for each tool result
+      for (const result of toolResults) {
+        if (!result.content) {
+          toolDebugInfo.push(`[DEBUG] Tool result missing content: ${result.tool_call_id}`);
+        } else {
+          toolDebugInfo.push(`[DEBUG] Tool result: ${result.content}`);
+        }
+      }
+      
+      // Add the assistant message with tool calls
+      allMessages.push({
+        role: 'assistant',
+        content: responseData.content
+      });
+      
+      // Add tool results as user messages
+      for (const result of toolResults) {
+        allMessages.push({
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: result.tool_call_id,
+            content: result.content
+          }]
+        });
+      }
+      
+      // Get a new response from Claude with updated messages including tool results
+      if (DEBUG_MODE) console.log('[DEBUG] Getting follow-up response from Claude');
+      claudeResponse = await axios.post(
+        'https://api.anthropic.com/v1/messages',
+        {
+          model,
+          messages: allMessages,
+          max_tokens: 4000,
+          system: SYSTEM_PROMPT,
+          tools,
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+          },
+        }
+      );
+      
+      responseData = claudeResponse.data;
+      toolCallCount++;
+    }
+
+    if (DEBUG_MODE) console.log('[DEBUG] Claude API response complete after', toolCallCount, 'tool calls');
+    
+    // If there were tool calls, add the debug info to the response
+    const SEND_DEBUG_INFO = false;
+    if (SEND_DEBUG_INFO && toolDebugInfo.length > 0) {
+      responseData.debug = {
+        toolCalls: toolDebugInfo
+      };
+    }
+    
+    return res.json(responseData);
+  } catch (error: any) {
+    console.error('[ERROR] Claude API error details:', {
+      response: error.response?.data,
+      message: error.message,
+      stack: error.stack
+    });
+    return res.status(500).json({
+      error: 'Failed to communicate with Claude API',
+      details: error.response?.data || error.message
+    });
   }
 });
 
@@ -351,7 +641,64 @@ app.post('/api/elevenlabs/tts', (req, res) => {
     });
 });
 
+const startMCPServers = async () => {
+  try {
+    // Load MCP configuration
+    // Use process.cwd() which should be the project root when running `npm run server`
+    const configPath = path.join(process.cwd(), 'mcp-config.json'); 
+    const mcpConfigRaw = await fsPromises.readFile(configPath, 'utf-8'); // Use await with promise
+    const mcpConfig = JSON.parse(mcpConfigRaw); // Parse the raw string data
+
+    if (!mcpConfig.mcpServers || typeof mcpConfig.mcpServers !== 'object') {
+      console.error('[ERROR] Invalid mcp-config.json: mcpServers property is missing or not an object.');
+      return;
+    }
+
+    console.log('[INFO] Starting MCP servers from config...');
+    const serverPromises: Promise<string>[] = [];
+
+    for (const [serverName, serverConfig] of Object.entries(mcpConfig.mcpServers as Record<string, ServerConfig>)) {
+      console.log(`[INFO] Initiating start for server: ${serverName}`);
+      // Start server but don't wait for completion here, collect promises
+      serverPromises.push(mcpManager.startServer(serverName, serverConfig));
+    }
+    
+    // Wait for all server start attempts to log their initial status
+    const startResults = await Promise.all(serverPromises);
+    startResults.forEach(result => console.log(`[INFO] Server start attempt result: ${result}`));
+
+    // After attempting to start all servers, discover tools from those that started successfully
+    console.log('[INFO] Discovering tools from all started MCP servers...');
+    await mcpManager.discoverToolsFromAllServers(); 
+    console.log('[INFO] Tool discovery phase complete.');
+
+  } catch (error) {
+    console.error('[ERROR] Failed to load or start MCP servers:', error);
+  }
+};
+
 // Start the server
-app.listen(port, () => {
+const serverInstance = app.listen(port, async () => {
   console.log(`Server running at http://localhost:${port}`);
+  
+  // Start MCP Servers (async, don't block server start)
+  startMCPServers().catch(err => {
+     console.error("[ERROR] Unhandled error during MCP server startup:", err);
+  });
+
+  console.log(`Server listening on port ${port}`);
+});
+
+// Handle server shutdown
+process.on('SIGINT', () => {
+  console.log('\n[INFO] Shutting down server...');
+  
+  // Clean up MCP servers
+  mcpManager.cleanup();
+  
+  // Close the server
+  serverInstance.close(() => {
+    console.log('[INFO] Server shut down');
+    process.exit(0);
+  });
 });
