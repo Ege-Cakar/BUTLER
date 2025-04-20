@@ -359,22 +359,11 @@ app.post('/api/claude', async (req, res) => {
     if (DEBUG_MODE) console.log('[DEBUG] Claude API response complete after', toolCallCount, 'tool calls');
     
     // If there were tool calls, add the debug info to the response
-    if (toolDebugInfo.length > 0) {
-      // Find the first text content to append debug info
-      if (responseData.content && Array.isArray(responseData.content)) {
-        for (let i = 0; i <responseData.content.length; i++) {
-          const item = responseData.content[i];
-          if (item.type === 'text') {
-            // Add debug info to the text
-            const debugText = '\n\n---\n' + toolDebugInfo.join('\n') + '\n---';
-            responseData.content[i] = {
-              ...item,
-              text: item.text + debugText
-            };
-            break;
-          }
-        }
-      }
+    const SEND_DEBUG_INFO = false;
+    if (SEND_DEBUG_INFO && toolDebugInfo.length > 0) {
+      responseData.debug = {
+        toolCalls: toolDebugInfo
+      };
     }
     
     return res.json(responseData);
