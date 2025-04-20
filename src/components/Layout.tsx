@@ -4,15 +4,15 @@ import {
   Bars3Icon,
   HomeIcon,
   ChatBubbleLeftRightIcon,
-  FolderIcon,
   XMarkIcon,
+  FolderIcon,
 } from '@heroicons/react/24/outline'
 import { Link, useLocation } from 'react-router-dom'
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: HomeIcon },
-  { name: 'Projects', href: '/projects', icon: FolderIcon },
   { name: 'Chat', href: '/chat', icon: ChatBubbleLeftRightIcon },
+  { name: 'Clean', href: '/clean', icon: FolderIcon },
 ]
 
 export default function Layout({ children }: { children: React.ReactNode }) {

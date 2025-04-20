@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import ChatInput from '../components/ChatInput'
+import MarkdownRenderer from '../components/MarkdownRenderer'
 
 interface ClaudeContent {
   text: string
@@ -60,6 +61,7 @@ export default function Chat() {
     const pendingMessage = sessionStorage.getItem('pendingMessage')
     const autoSubmit = sessionStorage.getItem('autoSubmit')
     const speechInput = sessionStorage.getItem('fromSpeech') === 'true'
+    
     console.log('Checking pending message:', { pendingMessage, autoSubmit, speechInput })
     
     if (pendingMessage) {
@@ -99,6 +101,10 @@ export default function Chat() {
           setTimeout(async () => {
             try {
               console.log('Sending auto-submitted message to Claude API...')
+              console.log('[DEBUG] Auto-submit with fromSpeech:', speechInput)
+              
+              // Store the fromSpeech value for later use with TTS
+              const useTextToSpeech = speechInput;
               
               // Prepare placeholder message ID
               const placeholderId = crypto.randomUUID();
@@ -172,7 +178,7 @@ export default function Chat() {
                     )
                   );
                   
-                  // When we reach the end, update status to sent
+                  // When we reach the end, update status to sent and handle text-to-speech
                   if (i === responseText.length - 1) {
                     setMessages(prev => 
                       prev.map(msg => 
@@ -181,8 +187,49 @@ export default function Chat() {
                           : msg
                       )
                     );
+                    
+                    // If the message was from speech input, convert the response to speech
+                    if (useTextToSpeech) {
+                      try {
+                        console.log('[DEBUG] Auto-submit: Converting response to speech via ElevenLabs...')
+                        console.log('[DEBUG] Response text length:', responseText.length)
+                        console.log('[DEBUG] Response text preview:', responseText.substring(0, 100) + '...')
+                        
+                        console.time('[DEBUG] ElevenLabs API call')
+                        fetch('http://localhost:3001/api/elevenlabs/tts', {
+                          method: 'POST',
+                          headers: {
+                            'Content-Type': 'application/json'
+                          },
+                          body: JSON.stringify({
+                            text: responseText,
+                            voiceId: 'nPczCjzI2devNBz1zQrb' // Default voice ID
+                          })
+                        })
+                        .then(ttsResponse => {
+                          console.timeEnd('[DEBUG] ElevenLabs API call')
+                          console.log('[DEBUG] ElevenLabs API response status:', ttsResponse.status)
+                          
+                          if (ttsResponse.ok) {
+                            return ttsResponse.blob()
+                          } else {
+                            throw new Error(`TTS API error: ${ttsResponse.status}`)
+                          }
+                        })
+                        .then(audioBlob => {
+                          console.log('[DEBUG] Audio blob size:', audioBlob.size, 'bytes')
+                          const audioUrl = URL.createObjectURL(audioBlob)
+                          setAudioSrc(audioUrl)
+                        })
+                        .catch(error => {
+                          console.error('[DEBUG] TTS error:', error)
+                        })
+                      } catch (ttsError) {
+                        console.error('TTS error:', ttsError)
+                      }
+                    }
                   }
-                }, i * 15); // 15ms per character
+                }, i * 5);
               }
             } catch (error) {
               console.error('Error in auto-submit response:', error)
@@ -418,7 +465,7 @@ export default function Chat() {
             // Reset the fromSpeech flag
             setFromSpeech(false)
           }
-        }, i * 15); // 15ms per character
+        }, i * 5);
       }
     } catch (error) {
       console.error('Claude API error:', error)
@@ -470,10 +517,17 @@ export default function Chat() {
                 : 'bg-butler-accent/20 text-butler-dark'
             }`}
           >
-            <p>
-              {message.content}
-              {message.status === 'thinking' && <AnimatedEllipsis />}
-            </p>
+            {message.sender === 'butler' ? (
+              <div>
+                <MarkdownRenderer content={message.content} />
+                {message.status === 'thinking' && <AnimatedEllipsis />}
+              </div>
+            ) : (
+              <p>
+                {message.content}
+                {message.status === 'thinking' && <AnimatedEllipsis />}
+              </p>
+            )}
             <p className="text-xs mt-1 text-butler-dark/70">
               {message.timestamp.toLocaleTimeString()}
             </p>
