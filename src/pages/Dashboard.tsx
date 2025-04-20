@@ -21,9 +21,9 @@ export default function Dashboard(): React.ReactElement {
     <div className="flex flex-col h-screen bg-white">
       {/* Header */}
       <div className="max-w-3xl mx-auto p-4">
-          <h1 className="text-3xl font-playfair italic">
-            <span className="text-butler-primary">Back at it,</span>{' '}
-            <span className="font-semibold not-italic text-butler-primary">BUTLER</span>
+          <h1 className="text-3xl">
+            <span className="text-butler-primary font-sans">Back at it,</span>{' '}
+            <span className="text-butler-primary font-serif font-medium not-italic">BUTLER</span>
           </h1>
       </div>
 
