@@ -46,9 +46,9 @@ class CoordinateScaler:
     def __init__(self):
         # Default to standard resolution for LLM's coordinate system
         self.llm_width = 1280
-        self.llm_height = 720
+        self.llm_height = 800
         self.vm_width = 1280  # Will be updated when we get actual VM dimensions
-        self.vm_height = 720  # Will be updated when we get actual VM dimensions
+        self.vm_height = 800  # Will be updated when we get actual VM dimensions
         self.scale_enabled = True
     
     def update_vm_dimensions(self, width: int, height: int):
@@ -659,3 +659,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
