@@ -36,12 +36,20 @@ export default function Chat() {
   useEffect(() => {
     const pendingMessage = sessionStorage.getItem('pendingMessage')
     const autoSubmit = sessionStorage.getItem('autoSubmit')
-    console.log('Checking pending message:', { pendingMessage, autoSubmit })
+    const speechInput = sessionStorage.getItem('fromSpeech') === 'true'
+    console.log('Checking pending message:', { pendingMessage, autoSubmit, speechInput })
     
     if (pendingMessage) {
       // First set the input for visual feedback, then clear it
       setInput(pendingMessage)
       sessionStorage.removeItem('pendingMessage')
+      
+      // Set the fromSpeech flag based on sessionStorage
+      if (speechInput) {
+        console.log('[DEBUG] Message was from speech input, setting fromSpeech flag')
+        setFromSpeech(true)
+        sessionStorage.removeItem('fromSpeech')
+      }
       
       // If autoSubmit is set, submit the message immediately
       if (autoSubmit) {

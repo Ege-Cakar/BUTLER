@@ -43,29 +43,35 @@ export default function ChatInput({ value, onChange, onSubmit, onTranscription, 
   };
   return (
     <div className="relative mt-2 flex-grow">
-      <textarea
-        rows={1}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault()
-            onSubmit()
-          }
-        }}
-        className="block w-full resize-none rounded-2xl border-0 bg-butler-accent/10 py-2.5 px-3.5 text-butler-dark placeholder:text-butler-primary/50 focus:bg-butler-accent/20 focus:ring-1 focus:ring-butler-accent/30 focus:outline-none transition-colors duration-200 ease-in-out sm:text-sm sm:leading-6"
-        placeholder={placeholder}
-      />
-      <div className="absolute right-2 top-1/2 -translate-y-1/2 flex space-x-2 items-center">
-        <AudioRecorder onTranscriptionComplete={handleTranscription} />
-        <button
-          type="button"
-          ref={submitButtonRef}
-          onClick={onSubmit}
-          className="inline-flex items-center gap-x-1.5 rounded-md bg-butler-primary px-2.5 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-butler-secondary transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-butler-primary"
-        >
-          <ChevronUpIcon className="-ml-0.5 h-5 w-5" aria-hidden="true" />
-        </button>
+      {/* Input container with fixed height to prevent layout shifts */}
+      <div className="relative">
+        <textarea
+          rows={1}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              onSubmit()
+            }
+          }}
+          className="block w-full resize-none rounded-2xl border-0 bg-butler-accent/10 py-2.5 px-3.5 pr-20 text-butler-dark placeholder:text-butler-primary/50 focus:bg-butler-accent/20 focus:ring-1 focus:ring-butler-accent/30 focus:outline-none transition-colors duration-200 ease-in-out sm:text-sm sm:leading-6"
+          placeholder={placeholder}
+        />
+        {/* Fixed position container for buttons */}
+        <div className="absolute right-2 top-1/2 -translate-y-1/2 flex space-x-2 items-center z-10">
+          <div className="w-8 h-8 flex items-center justify-center"> {/* Fixed width container */}
+            <AudioRecorder onTranscriptionComplete={handleTranscription} />
+          </div>
+          <button
+            type="button"
+            ref={submitButtonRef}
+            onClick={onSubmit}
+            className="inline-flex items-center justify-center w-8 h-8 rounded-md bg-butler-primary text-white shadow-sm hover:bg-butler-secondary transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-butler-primary"
+          >
+            <ChevronUpIcon className="h-5 w-5" aria-hidden="true" />
+          </button>
+        </div>
       </div>
     </div>
   )

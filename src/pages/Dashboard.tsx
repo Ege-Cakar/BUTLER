@@ -6,14 +6,17 @@ import ChatInput from '../components/ChatInput'
 
 export default function Dashboard(): React.ReactElement {
   const [input, setInput] = useState('')
+  const [fromSpeech, setFromSpeech] = useState(false)
   const navigate = useNavigate()
 
-  const handleSubmit = () => {
+  const handleSubmit = (speechInput = false) => {
     if (input.trim()) {
-      // Send the message directly to chat and navigate
       const message = input.trim()
       sessionStorage.setItem('pendingMessage', message)
       sessionStorage.setItem('autoSubmit', 'true')
+      sessionStorage.setItem('fromSpeech', speechInput ? 'true' : 'false')
+      console.log('[DEBUG] Dashboard sending message with fromSpeech:', speechInput)
+  
       navigate('/chat')
     }
   }
@@ -32,6 +35,15 @@ export default function Dashboard(): React.ReactElement {
           value={input}
           onChange={setInput}
           onSubmit={handleSubmit}
+          onTranscription={(text: string) => {
+            console.log('[DEBUG] Dashboard received transcription:', text)
+            setInput(text)
+            setFromSpeech(true) // Still good for UI feedback etc.
+            // Auto-submit with speech flag set to true
+            setTimeout(() => {
+              handleSubmit(true) // Pass true to indicate this came from speech
+            }, 500)
+          }}
         />
       </div>
     </div>
