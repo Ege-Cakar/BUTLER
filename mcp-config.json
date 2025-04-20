@@ -12,8 +12,22 @@
         "-y",
         "@modelcontextprotocol/server-memory",
         "--memory-path", 
-        "/Users/egecakar/Documents/Projects/BUTLER/memory.jsonl"
+        "/Users/stellali/Documents/Projects/BUTLER/memory.jsonl"
       ]
+    },
+    "filesystem": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/liazheng/Downloads"
+      ]
+    },
+    "google-calendar": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/Users/stellali/Desktop/BUTLER/mcp-servers/google-calendar-mcp/build/index.js"]
     }
   }
 }

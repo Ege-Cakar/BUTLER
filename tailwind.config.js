@@ -7,6 +7,8 @@ export default {
   theme: {
     extend: {
       fontFamily: {
+        'sans': ['Inter', 'system-ui', 'sans-serif'],
+        'serif': ['Libre Baskerville', 'serif'],
         'playfair': ['Playfair Display', 'serif'],
       },
       colors: {
