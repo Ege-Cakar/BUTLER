@@ -11,7 +11,28 @@ interface Message {
   content: string
   sender: 'user' | 'butler'
   timestamp: Date
-  status?: 'sending' | 'sent' | 'error'
+  status?: 'sending' | 'sent' | 'error' | 'thinking'
+}
+
+// Animated ellipsis component
+function AnimatedEllipsis() {
+  const [dots, setDots] = useState('');
+  
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDots(prev => {
+        if (prev === '') return '.';
+        if (prev === '.') return '..';
+        if (prev === '..') return '...';
+        return '';
+      });
+    }, 500);
+    
+    return () => clearInterval(interval);
+  }, []);
+  
+  // Fixed-width container to prevent text shifting
+  return <span className="inline-block w-[24px]">{dots}</span>;
 }
 
 export default function Chat() {
@@ -31,6 +52,8 @@ export default function Chat() {
   useEffect(() => {
     scrollToBottom()
   }, [messages])
+
+
 
   // Check for pending message from Dashboard
   useEffect(() => {
@@ -77,6 +100,20 @@ export default function Chat() {
             try {
               console.log('Sending auto-submitted message to Claude API...')
               
+              // Prepare placeholder message ID
+              const placeholderId = crypto.randomUUID();
+              
+              // Only show placeholder if response takes longer than 1.5 seconds
+              const placeholderTimeout = setTimeout(() => {
+                setMessages(prev => [...prev, {
+                  id: placeholderId,
+                  content: 'Allow me to consider your request',
+                  sender: 'butler',
+                  timestamp: new Date(),
+                  status: 'thinking'
+                }]);
+              }, 1500);
+              
               // Send request to our Claude API endpoint
               const response = await fetch('http://localhost:3001/api/claude', {
                 method: 'POST',
@@ -90,6 +127,10 @@ export default function Chat() {
                   ]
                 })
               })
+              
+              // Clear the timeout and remove placeholder message if it was added
+              clearTimeout(placeholderTimeout);
+              setMessages(prev => prev.filter(msg => msg.id !== placeholderId))
               
               if (!response.ok) {
                 const errorText = await response.text()
@@ -106,15 +147,43 @@ export default function Chat() {
                 : 'Sorry, I could not generate a response.'
               console.log('Auto-submit response:', responseText)
               
-              const butlerMessage: Message = {
-                id: crypto.randomUUID(),
-                content: responseText,
+              // Create a message with a unique ID
+              const butlerId = crypto.randomUUID();
+              
+              // Add empty message that will be streamed into
+              setMessages(prev => [...prev, {
+                id: butlerId,
+                content: '',
                 sender: 'butler',
                 timestamp: new Date(),
-                status: 'sent'
-              }
+                status: 'sending'
+              }]);
               
-              setMessages(prev => [...prev, butlerMessage])
+              // Simulate streaming by updating the message character by character
+              let currentText = '';
+              for (let i = 0; i < responseText.length; i++) {
+                setTimeout(() => {
+                  currentText += responseText[i];
+                  setMessages(prev => 
+                    prev.map(msg => 
+                      msg.id === butlerId 
+                        ? { ...msg, content: currentText } 
+                        : msg
+                    )
+                  );
+                  
+                  // When we reach the end, update status to sent
+                  if (i === responseText.length - 1) {
+                    setMessages(prev => 
+                      prev.map(msg => 
+                        msg.id === butlerId 
+                          ? { ...msg, status: 'sent' } 
+                          : msg
+                      )
+                    );
+                  }
+                }, i * 15); // 15ms per character
+              }
             } catch (error) {
               console.error('Error in auto-submit response:', error)
               console.error('Error details:', JSON.stringify(error, null, 2))
@@ -137,12 +206,72 @@ export default function Chat() {
     }
   }, [])
 
+  const handleCommand = async (command: string, _args: string) => {
+    try {
+      if (command === 'help') {
+        return `Available commands:\n- /help: Show this help message`;
+      } else {
+        return `Unknown command: ${command}. Type /help for available commands.`;
+      }
+    } catch (error) {
+      console.error(`Error executing command ${command}:`, error);
+      return `Error executing command ${command}: ${error instanceof Error ? error.message : 'Unknown error'}`;
+    }
+  };
+
   const handleSubmit = async () => {
     console.log('handleSubmit called, input:', input, 'isLoading:', isLoading)
     if (!input.trim() || isLoading) return
     
     const trimmedInput = input.trim()
     console.log('Submitting message:', trimmedInput, 'fromSpeech:', fromSpeech)
+    
+    // Check if input is a command
+    if (trimmedInput.startsWith('/')) {
+      const parts = trimmedInput.substring(1).split(' ');
+      const command = parts[0];
+      const args = parts.slice(1).join(' ');
+      
+      const userMessage: Message = {
+        id: crypto.randomUUID(),
+        content: trimmedInput,
+        sender: 'user',
+        timestamp: new Date(),
+        status: 'sent'
+      };
+      
+      setMessages(prev => [...prev, userMessage]);
+      setInput('');
+      setIsLoading(true);
+      
+      try {
+        const response = await handleCommand(command, args);
+        
+        const commandResponse: Message = {
+          id: crypto.randomUUID(),
+          content: response,
+          sender: 'butler',
+          timestamp: new Date(),
+          status: 'sent'
+        };
+        
+        setMessages(prev => [...prev, commandResponse]);
+      } catch (error) {
+        const errorMessage: Message = {
+          id: crypto.randomUUID(),
+          content: 'Error processing command: ' + (error instanceof Error ? error.message : 'Unknown error'),
+          sender: 'butler',
+          timestamp: new Date(),
+          status: 'error'
+        };
+        
+        setMessages(prev => [...prev, errorMessage]);
+      } finally {
+        setIsLoading(false);
+      }
+      
+      return;
+    }
   
     const userMessage: Message = {
       id: crypto.randomUUID(),
@@ -162,6 +291,22 @@ export default function Chat() {
     try {
       console.log('Sending request to Claude API...')
       
+      // Prepare placeholder message ID
+      const placeholderId = crypto.randomUUID();
+      
+      // Only show placeholder if response takes longer than 1.5 seconds
+      const placeholderTimeout = setTimeout(() => {
+        setMessages(prev => [...prev, {
+          id: placeholderId,
+          content: 'Allow me to consider your request',
+          sender: 'butler',
+          timestamp: new Date(),
+          status: 'thinking'
+        }]);
+      }, 1500);
+      
+
+      
       // Send request to our Claude API endpoint
       const response = await fetch('http://localhost:3001/api/claude', {
         method: 'POST',
@@ -175,6 +320,10 @@ export default function Chat() {
           ]
         })
       })
+      
+      // Clear the timeout and remove placeholder message if it was added
+      clearTimeout(placeholderTimeout);
+      setMessages(prev => prev.filter(msg => msg.id !== placeholderId))
       
       if (!response.ok) {
         const errorText = await response.text()
@@ -190,74 +339,87 @@ export default function Chat() {
       const responseText = Array.isArray(content)
         ? content[0].text
         : 'Sorry, I could not generate a response.'
-  
-      const butlerMessage: Message = {
-        id: crypto.randomUUID(),
-        content: responseText,
+        // Create a message with a unique ID
+      const butlerId = crypto.randomUUID();
+      
+      // Add empty message that will be streamed into
+      setMessages(prev => [...prev, {
+        id: butlerId,
+        content: '',
         sender: 'butler',
         timestamp: new Date(),
-        status: 'sent'
-      }
-  
-      setMessages(prev => [...prev, butlerMessage])
+        status: 'sending'
+      }]);
       
-      // If the user message was from speech, convert the response to speech
-      if (fromSpeech) {
-        try {
-          console.log('[DEBUG] Converting response to speech via ElevenLabs...')
-          console.log('[DEBUG] Response text length:', responseText.length)
-          console.log('[DEBUG] Response text preview:', responseText.substring(0, 100) + '...')
+      // Simulate streaming by updating the message character by character
+      let currentText = '';
+      for (let i = 0; i < responseText.length; i++) {
+        setTimeout(() => {
+          currentText += responseText[i];
+          setMessages(prev => 
+            prev.map(msg => 
+              msg.id === butlerId 
+                ? { ...msg, content: currentText } 
+                : msg
+            )
+          );
           
-          console.time('[DEBUG] ElevenLabs API call')
-          const ttsResponse = await fetch('http://localhost:3001/api/elevenlabs/tts', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              text: responseText,
-              voiceId: 'nPczCjzI2devNBz1zQrb' // Default voice ID
-            })
-          })
-          console.timeEnd('[DEBUG] ElevenLabs API call')
-          
-          console.log('[DEBUG] ElevenLabs API response status:', ttsResponse.status)
-          console.log('[DEBUG] ElevenLabs API response headers:', Object.fromEntries([...ttsResponse.headers.entries()]))
-          
-          if (ttsResponse.ok) {
-            console.time('[DEBUG] Processing audio blob')
-            const audioBlob = await ttsResponse.blob()
-            console.log('[DEBUG] Audio blob size:', audioBlob.size, 'bytes')
-            console.log('[DEBUG] Audio blob type:', audioBlob.type)
+          // When we reach the end, update status to sent and handle text-to-speech
+          if (i === responseText.length - 1) {
+            setMessages(prev => 
+              prev.map(msg => 
+                msg.id === butlerId 
+                  ? { ...msg, status: 'sent' } 
+                  : msg
+              )
+            );
             
-            const audioUrl = URL.createObjectURL(audioBlob)
-            console.log('[DEBUG] Created audio URL:', audioUrl)
-            setAudioSrc(audioUrl)
-            
-            // Play the audio
-            if (audioRef.current) {
-              console.log('[DEBUG] Playing audio...')
-              audioRef.current.play().then(() => {
-                console.log('[DEBUG] Audio playback started')
-              }).catch(error => {
-                console.error('[DEBUG] Audio playback error:', error)
-              })
-            } else {
-              console.error('[DEBUG] Audio ref is null, cannot play audio')
+            // If the user message was from speech, convert the response to speech
+            if (fromSpeech) {
+              try {
+                console.log('[DEBUG] Converting response to speech via ElevenLabs...')
+                console.log('[DEBUG] Response text length:', responseText.length)
+                console.log('[DEBUG] Response text preview:', responseText.substring(0, 100) + '...')
+                
+                console.time('[DEBUG] ElevenLabs API call')
+                fetch('http://localhost:3001/api/elevenlabs/tts', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({
+                    text: responseText,
+                    voiceId: 'nPczCjzI2devNBz1zQrb' // Default voice ID
+                  })
+                })
+                .then(ttsResponse => {
+                  console.timeEnd('[DEBUG] ElevenLabs API call')
+                  console.log('[DEBUG] ElevenLabs API response status:', ttsResponse.status)
+                  
+                  if (ttsResponse.ok) {
+                    return ttsResponse.blob()
+                  } else {
+                    throw new Error(`TTS API error: ${ttsResponse.status}`)
+                  }
+                })
+                .then(audioBlob => {
+                  console.log('[DEBUG] Audio blob size:', audioBlob.size, 'bytes')
+                  const audioUrl = URL.createObjectURL(audioBlob)
+                  setAudioSrc(audioUrl)
+                })
+                .catch(error => {
+                  console.error('[DEBUG] TTS error:', error)
+                })
+              } catch (ttsError) {
+                console.error('TTS error:', ttsError)
+              }
             }
-            console.timeEnd('[DEBUG] Processing audio blob')
-          } else {
-            console.error('[DEBUG] TTS API error:', ttsResponse.status)
-            const errorText = await ttsResponse.text()
-            console.error('[DEBUG] TTS API error details:', errorText)
+            
+            // Reset the fromSpeech flag
+            setFromSpeech(false)
           }
-        } catch (ttsError) {
-          console.error('TTS error:', ttsError)
-        }
+        }, i * 15); // 15ms per character
       }
-      
-      // Reset the fromSpeech flag
-      setFromSpeech(false)
     } catch (error) {
       console.error('Claude API error:', error)
       console.error('Error details:', JSON.stringify(error, null, 2))
@@ -292,14 +454,15 @@ export default function Chat() {
           onEnded={() => setAudioSrc(null)}
         />
       )}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto p-4 space-y-4 relative">
+        {/* Regular messages */}
       {messages.map((message) => (
         <div
           key={message.id}
           className={`flex ${message.sender === 'user' ? 'justify-end' : 'justify-start'}`}
         >
           <div
-            className={`rounded-lg px-4 py-2 max-w-sm ${
+            className={`rounded-lg px-4 py-2 max-w-sm break-words ${
               message.sender === 'user'
                 ? 'bg-butler-secondary/30 text-butler-dark'
                 : message.status === 'error'
@@ -307,7 +470,10 @@ export default function Chat() {
                 : 'bg-butler-accent/20 text-butler-dark'
             }`}
           >
-            <p>{message.content}</p>
+            <p>
+              {message.content}
+              {message.status === 'thinking' && <AnimatedEllipsis />}
+            </p>
             <p className="text-xs mt-1 text-butler-dark/70">
               {message.timestamp.toLocaleTimeString()}
             </p>
@@ -322,6 +488,7 @@ export default function Chat() {
         value={input}
         onChange={setInput}
         onSubmit={handleSubmit}
+
         onTranscription={(text: string) => {
           console.log('Transcription received in Chat component:', text);
           setInput(text);
@@ -331,10 +498,11 @@ export default function Chat() {
           setTimeout(() => {
             console.log('Auto-submitting from Chat component');
             handleSubmit();
-          }, 1000);
+          }, 1);
         }}
-        placeholder="Type your message..."
+        placeholder="Send a message..."
       />
+
     </div>
   </div>
   )
