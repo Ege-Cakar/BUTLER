@@ -18,6 +18,21 @@ const __dirname = dirname(__filename);
 // Load environment variables from .env.local
 dotenv.config({ path: '.env.local' });
 
+// Set to false to disable debug logging
+const DEBUG_MODE = false;
+
+// Debug environment variables
+if (DEBUG_MODE) {
+  console.log('[DEBUG] Environment variables loaded from:', process.env.DOTENV_PATH || '.env.local');
+  console.log('[DEBUG] CLAUDE_API_KEY present:', !!process.env.CLAUDE_API_KEY);
+}
+if (process.env.CLAUDE_API_KEY) {
+  process.env.CLAUDE_API_KEY = process.env.CLAUDE_API_KEY.trim();
+  if (DEBUG_MODE) {
+    console.log('[DEBUG] CLAUDE_API_KEY format:', process.env.CLAUDE_API_KEY.substring(0, 5) + '...');
+  }
+}
+
 // System prompt for Claude
 const SYSTEM_PROMPT = `You are BUTLER, an agent designed to help users complete tasks on their computer. Follow these guidelines when assisting users with computer use:
 
@@ -58,14 +73,6 @@ In terms of memory, follow these steps for each interaction:
      a) Create entities for recurring organizations, people, and significant events
      b) Connect them to the current entities using relations
      c) Store facts about them as observations`;
-
-// Debug environment variables
-console.log('[DEBUG] Environment variables loaded from:', process.env.DOTENV_PATH || '.env.local');
-console.log('[DEBUG] CLAUDE_API_KEY present:', !!process.env.CLAUDE_API_KEY);
-if (process.env.CLAUDE_API_KEY) {
-  process.env.CLAUDE_API_KEY = process.env.CLAUDE_API_KEY.trim();
-  console.log('[DEBUG] CLAUDE_API_KEY format:', process.env.CLAUDE_API_KEY.substring(0, 5) + '...');
-}
 
 const app = express();
 const port = 3001;
@@ -204,10 +211,11 @@ app.get('/api/mcp/tools', (_req, res) => {
 
 // Claude API endpoint
 app.post('/api/claude', async (req, res) => {
-  console.log('[DEBUG] Claude API endpoint called');
+  if (DEBUG_MODE) console.log('[DEBUG] Claude API endpoint called');
+  
   try {
     const apiKey = process.env.CLAUDE_API_KEY?.trim();
-    console.log('[DEBUG] Claude API key format:', apiKey ? apiKey.substring(0, 5) + '...' : 'not found');
+    if (DEBUG_MODE) console.log('[DEBUG] Claude API key format:', apiKey ? apiKey.substring(0, 5) + '...' : 'not found');
     
     if (!apiKey) {
       console.error('[ERROR] Claude API key not configured or empty');
@@ -222,9 +230,9 @@ app.post('/api/claude', async (req, res) => {
 
     // Get tools from MCP Manager
     const tools = mcpManager.getToolsForClaude();
-    console.log(`[DEBUG] Sending ${tools.length} tools to Claude`);
+    if (DEBUG_MODE) console.log(`[DEBUG] Sending ${tools.length} tools to Claude`);
 
-    console.log('[DEBUG] Making initial Claude API call');
+    if (DEBUG_MODE) console.log('[DEBUG] Making initial Claude API call');
     let claudeResponse = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
@@ -325,7 +333,7 @@ app.post('/api/claude', async (req, res) => {
       }
       
       // Get a new response from Claude with updated messages including tool results
-      console.log('[DEBUG] Getting follow-up response from Claude');
+      if (DEBUG_MODE) console.log('[DEBUG] Getting follow-up response from Claude');
       claudeResponse = await axios.post(
         'https://api.anthropic.com/v1/messages',
         {
@@ -348,7 +356,7 @@ app.post('/api/claude', async (req, res) => {
       toolCallCount++;
     }
 
-    console.log('[DEBUG] Claude API response complete after', toolCallCount, 'tool calls');
+    if (DEBUG_MODE) console.log('[DEBUG] Claude API response complete after', toolCallCount, 'tool calls');
     
     // If there were tool calls, add the debug info to the response
     if (toolDebugInfo.length > 0) {

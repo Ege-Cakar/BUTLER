@@ -54,6 +54,9 @@ class MCPManager {
   private nextPort: number = 3002;
   private stdioRequestTimeout = 10000; // 10 seconds timeout for stdio requests
   
+  // Set to false to disable debug logging
+  private static DEBUG_MODE = false;
+  
   // Helper to get project root directory
   private getProjectRoot(): string {
       // ES Module equivalent for __dirname
@@ -565,10 +568,10 @@ class MCPManager {
 
     // Collect tools from all sessions
     for (const [serverName, session] of this.sessions.entries()) {
-      console.log(`[INFO] Getting tools from server "${serverName}": ${session.tools.length} tools found`);
+      if (MCPManager.DEBUG_MODE) console.log(`[INFO] Getting tools from server "${serverName}": ${session.tools.length} tools found`);
       
       for (const tool of session.tools) {
-        console.log(`[TRACE] Processing tool from ${serverName}: Name='${tool.name}', Desc='${tool.description}'`);
+        if (MCPManager.DEBUG_MODE) console.log(`[TRACE] Processing tool from ${serverName}: Name='${tool.name}', Desc='${tool.description}'`);
         
         // Validate the tool has required properties
         if (!tool.name || !tool.description || !tool.inputSchema) {
@@ -586,12 +589,14 @@ class MCPManager {
     }
     
     // Log detailed info about tools being sent to Claude
-    console.log(`[INFO] Total tools for Claude: ${claudeTools.length}`);
-    claudeTools.forEach(tool => {
-      console.log(`[DEBUG] Registered Claude tool: ${tool.name}, Description: ${tool.description}`);
-      // Log the schema structure for debugging
-      console.log(`[DEBUG] Schema for ${tool.name}:`, JSON.stringify(tool.input_schema, null, 2)); 
-    });
+    if (MCPManager.DEBUG_MODE) {
+      console.log(`[INFO] Total tools for Claude: ${claudeTools.length}`);
+      claudeTools.forEach(tool => {
+        console.log(`[DEBUG] Registered Claude tool: ${tool.name}, Description: ${tool.description}`);
+        // Log the schema structure for debugging
+        console.log(`[DEBUG] Schema for ${tool.name}:`, JSON.stringify(tool.input_schema, null, 2)); 
+      });
+    }
     
     return claudeTools;
   }
@@ -620,13 +625,13 @@ class MCPManager {
         
         hasToolCalls = true;
         const toolName = incomingToolName;
-        console.log(`[INFO] Processing tool call: ${toolName}`);
+        if (MCPManager.DEBUG_MODE) console.log(`[INFO] Processing tool call: ${toolName}`);
 
         try {
           // Extract tool info
           const toolInput = item.tool_input ?? item.input ?? item.arguments ?? {};
 
-          console.log(`[INFO] Processing tool call: ${toolName} with arguments:`, toolInput);
+          if (MCPManager.DEBUG_MODE) console.log(`[INFO] Processing tool call: ${toolName} with arguments:`, toolInput);
           
           // Execute the tool
           const result = await this.executeTool(toolName, toolInput);
