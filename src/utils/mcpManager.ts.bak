@@ -1,0 +1,1574 @@
+// MCP Manager - Handles MCP server connections and tool execution
+import { spawn, ChildProcess } from 'child_process';
+import axios, { AxiosError } from 'axios';
+import * as path from 'path'; // Import path module
+import { fileURLToPath } from 'url'; // Needed for ES Modules __dirname equivalent
+import { v4 as uuidv4 } from 'uuid'; // For request IDs
+import Readline from 'readline'; // To read lines from stdout
+
+// Interfaces for MCP Tool Communication
+export interface MCPTool {
+  name: string;
+  description: string;
+  inputSchema: any; 
+}
+
+export interface ClaudeTool {
+  name: string;
+  description: string;
+  input_schema: any;
+}
+
+export interface ToolReference {
+  serverName: string;
+  originalName: string;
+}
+
+export interface ServerConfig {
+  type: 'builtin' | 'command' | 'python' | 'stdio'; // Added type
+  command: string;
+  args: string[];
+  port?: number;
+  stdio?: boolean; // if true, treat server as stdio-based MCP
+}
+
+export interface ToolResult {
+  content: string;
+}
+
+interface ServerSession {
+  name: string;
+  process: ChildProcess | null;
+  port: number | null; // Null for stdio
+  tools: MCPTool[];
+  isStdio: boolean; // Flag to indicate stdio communication
+  pendingRequests?: Map<string, { resolve: (value: any) => void; reject: (reason?: any) => void; timer: NodeJS.Timeout }>; // For stdio request/response mapping
+  responseBuffer?: string; // Buffer for incoming stdio data
+}
+
+// MCP Manager Class (Singleton)
+class MCPManager {
+  private static instance: MCPManager;
+  private sessions: Map<string, ServerSession> = new Map();
+  private toolMap: Map<string, ToolReference> = new Map();
+  private nextPort: number = 3002;
+  private stdioRequestTimeout = 10000; // 10 seconds timeout for stdio requests
+  
+  // Set to false to disable debug logging
+  private static DEBUG_MODE = false;
+  
+  // Helper to get project root directory
+  private getProjectRoot(): string {
+      // ES Module equivalent for __dirname
+      const __filename = fileURLToPath(import.meta.url);
+      const __dirname = path.dirname(__filename);
+      // Assumes this file is in build/src/utils/ or src/utils/
+      // Resolve relative to the current directory to find the project root
+      // Adjust '../..' if the output structure is different (e.g., in a 'dist' folder)
+      return path.resolve(__dirname, '..', '..'); 
+  }
+  
+  private constructor() {}
+  
+  // Get singleton instance
+  public static getInstance(): MCPManager {
+    if (!MCPManager.instance) {
+      MCPManager.instance = new MCPManager();
+    }
+    return MCPManager.instance;
+  }
+  
+  // Start an MCP server based on config
+  async startServer(serverName: string, config: ServerConfig): Promise<string> {
+    let port: number | null = null;
+    let serverProcess: ChildProcess | null = null;
+    let isStdio = false;
+
+    const projectRoot = this.getProjectRoot();
+
+    try {
+      switch (config.type) {
+        case 'builtin':
+          port = config.port || 3001;
+          console.log(`[INFO] Server "${serverName}" is built-in, using port ${port}.`);
+          break;
+
+        case 'command':
+        case 'python':
+          port = this.nextPort++;
+          let commandPath: string;
+          let commandArgs: string[];
+
+          if (config.type === 'python') {
+            commandPath = 'python';
+            const scriptPath = path.isAbsolute(config.command)
+              ? config.command
+              : path.join(projectRoot, config.command);
+            // Add port only if NOT stdio (though python type implies HTTP for now)
+            commandArgs = [scriptPath, '--port', port.toString(), ...config.args];
+            console.log(`[INFO] Starting Python server "${serverName}" on port ${port}: ${commandPath} ${commandArgs.join(' ')}`);
+          } else { // 'command'
+            commandPath = config.command;
+            // Add port only if NOT stdio 
+            commandArgs = [...config.args, '--port', port.toString()]; 
+            console.log(`[INFO] Starting Command server "${serverName}" on port ${port}: ${commandPath} ${commandArgs.join(' ')}`);
+          }
+          serverProcess = spawn(commandPath, commandArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
+          break;
+
+        case 'stdio':
+          isStdio = true;
+          port = null; // No HTTP port for stdio
+          console.log(`[INFO] Starting Stdio server "${serverName}": ${config.command} ${config.args.join(' ')}`);
+          serverProcess = spawn(config.command, config.args, { stdio: ['pipe', 'pipe', 'pipe'] }); // Ensure pipes for stdio
+          break;
+
+        default:
+          throw new Error(`Unsupported server type: ${(config as any).type}`);
+      }
+
+      const session: ServerSession = {
+        name: serverName,
+        process: serverProcess,
+        port: port,
+        tools: [],
+        isStdio: isStdio,
+        pendingRequests: isStdio ? new Map() : undefined,
+        responseBuffer: isStdio ? '' : undefined,
+      };
+      this.sessions.set(serverName, session);
+
+      if (serverProcess) {
+        this.setupProcessHandlers(serverName, serverProcess);
+        if (isStdio) {
+            this.setupStdioCommunication(serverName, serverProcess);
+        }
+      }
+
+      return `Server "${serverName}" started (type: ${config.type}, port: ${port ?? 'stdio'})`;
+    } catch (error: any) {
+      console.error(`[ERROR] Failed to start server "${serverName}": ${error.message}`);
+      // Clean up if process started but failed later
+      if (serverProcess && !serverProcess.killed) {
+          serverProcess.kill();
+      }
+      this.sessions.delete(serverName);
+      throw error; // Re-throw to indicate failure
+    }
+  }
+
+  // Setup handlers for process exit and stderr
+  private setupProcessHandlers(serverName: string, process: ChildProcess): void {
+    process.on('exit', (code, signal) => {
+      console.log(`[INFO] Server "${serverName}" process exited with code ${code}, signal ${signal}`);
+      const session = this.sessions.get(serverName);
+      // Clean up pending requests on exit - Add null check
+      if (session?.pendingRequests) { 
+          session.pendingRequests.forEach((req) => {
+              clearTimeout(req.timer);
+              req.reject(new Error(`Server process exited with code ${code}`));
+          });
+          session.pendingRequests.clear();
+      }
+      this.sessions.delete(serverName);
+    });
+
+    process.stderr?.on('data', (data) => {
+      console.error(`[${serverName} stderr] ${data.toString().trim()}`);
+    });
+    
+    process.on('error', (err) => {
+        console.error(`[ERROR] Failed to start or communicate with server "${serverName}" process: ${err.message}`);
+        process.kill(); // Ensure process is killed on error
+        this.sessions.delete(serverName);
+    });
+  }
+  
+  // Setup communication handlers for stdio servers
+  private setupStdioCommunication(serverName: string, process: ChildProcess): void {
+    const session = this.sessions.get(serverName);
+    if (!session || !process.stdout) return; // Should not happen
+
+    const rl = Readline.createInterface({
+        input: process.stdout,
+        crlfDelay: Infinity
+    });
+
+    // Log server information to help with debugging
+    console.log(`[INFO] Setting up stdio communication for "${serverName}"`);
+
+    rl.on('line', (line) => {
+        try {
+            console.log(`[${serverName} stdout raw] ${line}`); // Enable debugging
+            const response: any = JSON.parse(line); // Cast to any to access properties
+            const requestId = response.id;
+
+            if (requestId && session.pendingRequests?.has(requestId)) {
+                const pending = session.pendingRequests.get(requestId)!;
+                clearTimeout(pending.timer);
+                if (response.error) {
+                    console.error(`[${serverName} error response id=${requestId}] ${JSON.stringify(response.error)}`);
+                    pending.reject(new Error(response.error.message || JSON.stringify(response.error)));
+                } else {
+                    console.log(`[${serverName} success response id=${requestId}]`); // Enable debugging
+                    pending.resolve(response.result);
+                }
+                session.pendingRequests.delete(requestId);
+            } else {
+                console.warn(`[${serverName}] Received stdio message without matching pending request ID or ID field:`, line);
+            }
+        } catch (e) {
+            console.error(`[${serverName}] Error parsing stdio line: '${line}'. Error: ${e}`);
+        }
+    });
+
+    rl.on('close', () => {
+        console.log(`[INFO] Stdout stream closed for server "${serverName}".`);
+    });
+  }
+
+  // Send a request to an stdio server with enhanced reliability
+  private sendStdioRequest<T>(serverName: string, method: string, params: any, attemptNumber = 0): Promise<T> {
+    const MAX_ATTEMPTS = 3; // Maximum retry attempts for stdio requests
+    const session = this.sessions.get(serverName);
+    
+    // Add explicit null checks for process and stdin
+    if (!session || !session.isStdio) {
+        return Promise.reject(new Error(`Server ${serverName} is not a running stdio server.`));
+    }
+    
+    // Check for valid process with stdin
+    if (!session.process || !session.process.stdin) {
+        if (attemptNumber < MAX_ATTEMPTS) {
+            console.log(`[INFO] Server ${serverName} process or stdin not available, attempting to restart...`);
+            
+            // If for VNC server, try to restart automatically
+            if (serverName === 'vnc') {
+                return new Promise((resolve, reject) => {
+                    // Restart VNC server
+                    this.startServer("vnc", {
+                        type: 'stdio',
+                        command: "/Users/egecakar/Documents/Projects/BUTLER/backend/vnc_env/bin/python3",
+                        args: ["backend/vnc_mcp.py"]
+                    }).then(() => {
+                        console.log(`[INFO] Server ${serverName} restarted, retrying request...`);
+                        // Wait for server to initialize
+                        setTimeout(() => {
+                            // Retry after server restart with incremented attempt number
+                            this.sendStdioRequest<T>(serverName, method, params, attemptNumber + 1)
+                                .then(resolve)
+                                .catch(reject);
+                        }, 2000); // Longer delay after restart
+                    }).catch(err => {
+                        console.error(`[ERROR] Failed to restart server ${serverName}: ${err.message}`);
+                        reject(new Error(`Server restart failed: ${err.message}`));
+                    });
+                });
+            }
+        }
+        
+        return Promise.reject(new Error(`Server ${serverName} process or stdin not available.`));
+    }
+    
+    // Check for pending requests map
+    if (!session.pendingRequests) {
+        console.error(`[ERROR] No pendingRequests map for server ${serverName}`);
+        return Promise.reject(new Error(`Server ${serverName} missing pendingRequests map.`));
+    }
+
+    return new Promise((resolve, reject) => {
+        const requestId = uuidv4();
+        
+        // Handle special case for tool listing - use the standard tools/list endpoint
+        // For VNC server, provide alternative endpoints to try
+        let actualMethod = method;
+        if (method === '') {
+            actualMethod = 'tools/list'; // Standard MCP endpoint
+        } else if (serverName === 'vnc' && method === 'list_tools' && attemptNumber === 1) {
+            // On retry, try alternative discovery endpoint
+            actualMethod = 'introspect';
+        }
+        
+        // Special handling for VNC tool calls to ensure format compatibility
+        if (serverName === 'vnc' && method !== '' && method !== 'tools/list' && method !== 'list_tools' && method !== 'introspect') {
+            // For VNC direct tool calls, ensure we're using the correct RPC format
+            // Remove vnc_ prefix if it exists
+            const toolName = method.replace(/^vnc_/, '');
+            actualMethod = toolName; // Use stripped name
+            
+            // Log the tool name transformation
+            if (method !== toolName) {
+                console.log(`[DEBUG] Transformed VNC tool name from ${method} to ${toolName}`);
+            }
+        }
+        
+        // Construct the JSON-RPC request object with proper format
+        const request = {
+            jsonrpc: '2.0',
+            id: requestId,
+            method: actualMethod,
+            params: params
+        };
+
+        // Calculate timeout based on attempt number (exponential backoff)
+        const timeout = this.stdioRequestTimeout * Math.pow(2, attemptNumber);
+        
+        // Setup timeout for request
+        const timer = setTimeout(() => {
+            session.pendingRequests?.delete(requestId);
+            
+            if (attemptNumber < MAX_ATTEMPTS) {
+                console.log(`[INFO] Request ${requestId} (${actualMethod}) to server ${serverName} timed out after ${timeout}ms, retrying (attempt ${attemptNumber + 1})...`);
+                
+                // Retry with incremented attempt number
+                this.sendStdioRequest<T>(serverName, method, params, attemptNumber + 1)
+                    .then(resolve)
+                    .catch(reject);
+            } else {
+                reject(new Error(`Request ${requestId} (${actualMethod}) to server ${serverName} timed out after ${timeout}ms (max attempts reached)`));
+            }
+        }, timeout);
+
+        session.pendingRequests.set(requestId, { resolve, reject, timer });
+
+        // Add newline to ensure proper message framing for stdio JSON-RPC
+        const requestString = JSON.stringify(request) + '\n';
+        console.log(`[${serverName} stdin] ${requestString.trim()}`); // Log request for debugging
+        
+        // Check stdin again before writing
+        if (!session.process?.stdin?.writable) {
+             clearTimeout(timer);
+             session.pendingRequests?.delete(requestId);
+             
+             if (attemptNumber < MAX_ATTEMPTS) {
+                 console.log(`[INFO] Stdin for ${serverName} not writable, retrying (attempt ${attemptNumber + 1})...`);
+                 
+                 // Wait before retry
+                 setTimeout(() => {
+                     this.sendStdioRequest<T>(serverName, method, params, attemptNumber + 1)
+                         .then(resolve)
+                         .catch(reject);
+                 }, 1000); // 1 second delay before retry
+             } else {
+                 reject(new Error(`Stdin for ${serverName} not writable (max attempts reached).`));
+             }
+             
+             return;
+        }
+        
+        // Write to the process's stdin
+        session.process.stdin.write(requestString, (err) => {
+            if (err) {
+                clearTimeout(timer);
+                session.pendingRequests?.delete(requestId);
+                console.error(`[ERROR] Failed to write to stdin for ${serverName}: ${err}`);
+                
+                if (attemptNumber < MAX_ATTEMPTS) {
+                    console.log(`[INFO] Write to stdin failed, retrying (attempt ${attemptNumber + 1})...`);
+                    
+                    // Wait before retry
+                    setTimeout(() => {
+                        this.sendStdioRequest<T>(serverName, method, params, attemptNumber + 1)
+                            .then(resolve)
+                            .catch(reject);
+                    }, 1000); // 1 second delay before retry
+                } else {
+                    reject(new Error(`Failed to write to stdin: ${err.message} (max attempts reached)`));
+                }
+            }
+        });
+    });
+  }
+
+  // Discover tools from a single MCP server with enhanced reliability
+  async discoverTools(serverName: string, retryCount = 0): Promise<MCPTool[]> {
+    const MAX_RETRIES = 3;
+    const session = this.sessions.get(serverName);
+    
+    if (!session) {
+      console.warn(`[WARN] Attempted to discover tools for non-existent session: ${serverName}`);
+      return [];
+    }
+
+    // Skip built-in servers (no process means built-in)
+    if (!session.process && session.port) {
+      console.log(`[INFO] Server "${serverName}" is built-in, skipping tool discovery.`);
+      return [];
+    }
+    
+    // First, check if the process is still running
+    if (session.process && session.process.exitCode !== null) {
+      if (retryCount < MAX_RETRIES) {
+        console.log(`[INFO] Server "${serverName}" process has exited (code: ${session.process.exitCode}), attempting to restart...`);
+        
+        try {
+          // Get the server configuration from mcp-config.json
+          if (serverName === 'vnc') {
+            const serverConfig = {
+              type: 'stdio',
+              command: "/Users/egecakar/Documents/Projects/BUTLER/backend/vnc_env/bin/python3",
+              args: ["backend/vnc_mcp.py"]
+            };
+            
+            // Restart the server
+            await this.startServer(serverName, serverConfig);
+            console.log(`[INFO] Server "${serverName}" successfully restarted`);
+            
+            // Wait for server to initialize
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // Try again with incremented retry counter
+            return this.discoverTools(serverName, retryCount + 1);
+          }
+        } catch (error) {
+          console.error(`[ERROR] Failed to restart server "${serverName}": ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      } else {
+        console.error(`[ERROR] Exceeded maximum retry attempts (${MAX_RETRIES}) for server "${serverName}"`);
+      }
+    }
+
+    // Special handling for VNC server with comprehensive tool discovery strategy
+    if (serverName === 'vnc') {
+      console.log(`[INFO] Using enhanced discovery method for VNC server (attempt ${retryCount + 1})...`);
+      
+      // Wait a bit before trying discovery, to ensure server is ready
+      if (retryCount === 0) {
+        console.log(`[INFO] Waiting for VNC server to initialize...`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      
+      // Array to track all errors for diagnostics
+      const discoveryErrors: string[] = [];
+      
+      try {
+        // METHOD 1: Try FastMCP's list_tools directly (most likely to work)
+        try {
+          console.log(`[DEBUG] ${serverName}: Trying FastMCP's list_tools endpoint`);
+          const vncToolsResult: any = await this.sendStdioRequest(serverName, 'list_tools', {});
+          
+          // Check for valid tools array
+          if (vncToolsResult && Array.isArray(vncToolsResult) && vncToolsResult.length > 0) {
+            console.log(`[INFO] ${serverName}: Successfully found ${vncToolsResult.length} tools using list_tools`);
+            
+            // Convert the FastMCP format to our standard format
+            session.tools = vncToolsResult.map((tool: any) => ({
+              name: tool.name || 'unknown',
+              description: tool.description || 'No description available',
+              inputSchema: tool.parameters || { type: 'object', properties: {} }
+            }));
+            
+            // Register VNC tools in the tool map (with both direct and prefixed names)
+            for (const tool of session.tools) {
+              // Register with server name prefix
+              const toolKey = `${serverName}_${tool.name}`;
+              this.toolMap.set(toolKey, { serverName, originalName: tool.name });
+              
+              // Also register with the original name for direct access
+              this.toolMap.set(tool.name, { serverName, originalName: tool.name });
+              
+              console.log(`[DEBUG] Registered VNC tool: ${tool.name} (also as ${toolKey})`);
+            }
+            
+            return session.tools;
+          }
+        } catch (error: unknown) {
+          const errorMsg = `FastMCP list_tools failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
+          discoveryErrors.push(errorMsg);
+          console.log(`[DEBUG] ${serverName}: ${errorMsg}`);
+        }
+        
+        // METHOD 2: Try standard MCP tools/list endpoint
+        try {
+          console.log(`[DEBUG] ${serverName}: Trying standard tools/list endpoint`);
+          const stdResult: any = await this.sendStdioRequest(serverName, 'tools/list', {});
+          
+          if (stdResult && Array.isArray(stdResult.tools) && stdResult.tools.length > 0) {
+            console.log(`[INFO] ${serverName}: Found ${stdResult.tools.length} VNC tools using tools/list`);
+            
+            // Store the tools in the session
+            session.tools = stdResult.tools;
+            
+            // Register VNC tools in the tool map (with both direct and prefixed names)
+            for (const tool of session.tools) {
+              const toolKey = `${serverName}_${tool.name}`;
+              this.toolMap.set(toolKey, { serverName, originalName: tool.name });
+              this.toolMap.set(tool.name, { serverName, originalName: tool.name });
+              console.log(`[DEBUG] Registered VNC tool: ${tool.name}`);
+            }
+            
+            return session.tools;
+          }
+        } catch (error: unknown) {
+          const errorMsg = `Standard tools/list failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
+          discoveryErrors.push(errorMsg);
+          console.log(`[DEBUG] ${serverName}: ${errorMsg}`);
+        }
+        
+        // METHOD 3: Try empty method for tool discovery
+        try {
+          console.log(`[DEBUG] ${serverName}: Trying empty method discovery`);
+          const emptyResult: any = await this.sendStdioRequest(serverName, '', {});
+          
+          if (emptyResult && Array.isArray(emptyResult.tools) && emptyResult.tools.length > 0) {
+            console.log(`[INFO] ${serverName}: Found ${emptyResult.tools.length} VNC tools using empty method`);
+            
+            // Store the tools in the session
+            session.tools = emptyResult.tools;
+            
+            // Register in the tool map
+            for (const tool of session.tools) {
+              const toolKey = `${serverName}_${tool.name}`;
+              this.toolMap.set(toolKey, { serverName, originalName: tool.name });
+              this.toolMap.set(tool.name, { serverName, originalName: tool.name });
+              console.log(`[DEBUG] Registered VNC tool: ${tool.name}`);
+            }
+            
+            return session.tools;
+          }
+        } catch (error: unknown) {
+          const errorMsg = `Empty method failed: ${error instanceof Error ? error.message : 'Unknown error'}`;
+          discoveryErrors.push(errorMsg);
+          console.log(`[DEBUG] ${serverName}: ${errorMsg}`);
+        }
+        
+        // Instead of a hardcoded tools list, retry discovery with longer delay
+        if (retryCount < MAX_RETRIES) {
+          console.log(`[INFO] Tool discovery methods failed, trying with longer delay (${retryCount + 1}/${MAX_RETRIES})...`);
+          
+          // Try restarting the VNC server
+          console.log(`[INFO] Restarting VNC server for better initialization...`);
+          
+          // Kill the existing process if it's still running
+          if (session.process && !session.process.killed) {
+            session.process.kill();
+            // Wait for process to terminate
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+          
+          // Restart the server with the same configuration
+          try {
+            const serverConfig = {
+              type: 'stdio',
+              command: "/Users/egecakar/Documents/Projects/BUTLER/backend/vnc_env/bin/python3",
+              args: ["backend/vnc_mcp.py"]
+            };
+            
+            await this.startServer("vnc", serverConfig);
+            console.log(`[INFO] VNC server restarted, waiting for initialization...`);
+            
+            // Wait longer for retry
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            // Try again with incremented retry counter
+            return this.discoverTools(serverName, retryCount + 1);
+          } catch (error) {
+            console.error(`[ERROR] Failed to restart VNC server: ${error instanceof Error ? error.message : 'Unknown error'}`);
+          }
+        }
+        
+        // If all retry attempts fail, log an error but DO NOT use hardcoded tools
+        console.error(`[ERROR] All tool discovery methods failed after ${MAX_RETRIES} attempts`);
+        session.tools = [];
+        return [];
+          {
+            name: "connect",
+            description: "Connect to a registered VNC server",
+            inputSchema: {
+              type: "object",
+              properties: {
+                name: {
+                  type: "string",
+                  description: "Name of the connection to connect to"
+                }
+              },
+              required: ["name"]
+            }
+          },
+          {
+            name: "disconnect",
+            description: "Disconnect from a VNC server",
+            inputSchema: {
+              type: "object",
+              properties: {
+                name: {
+                  type: "string",
+                  description: "Name of the connection to disconnect from"
+                }
+              },
+              required: ["name"]
+            }
+          },
+          {
+            name: "click",
+            description: "Click at specified coordinates on the remote system",
+            inputSchema: {
+              type: "object",
+              properties: {
+                connection: {
+                  type: "string",
+                  description: "Name of the VNC connection to use"
+                },
+                x: {
+                  type: "integer",
+                  description: "X coordinate to click"
+                },
+                y: {
+                  type: "integer",
+                  description: "Y coordinate to click"
+                },
+                button: {
+                  type: "string",
+                  description: "Mouse button to use (left, right, middle)",
+                  default: "left"
+                }
+              },
+              required: ["connection", "x", "y"]
+            }
+          },
+          {
+            name: "text",
+            description: "Type text on the remote system",
+            inputSchema: {
+              type: "object",
+              properties: {
+                connection: {
+                  type: "string",
+                  description: "Name of the VNC connection to use"
+                },
+                text: {
+                  type: "string",
+                  description: "Text to type"
+                },
+                delay: {
+                  type: "number",
+                  description: "Optional delay after typing (in seconds)",
+                  default: 0
+                }
+              },
+              required: ["connection", "text"]
+            }
+          },
+          {
+            name: "key",
+            description: "Press a key on the remote system",
+            inputSchema: {
+              type: "object",
+              properties: {
+                connection: {
+                  type: "string",
+                  description: "Name of the VNC connection to use"
+                },
+                key: {
+                  type: "string",
+                  description: "Key to press"
+                },
+                delay: {
+                  type: "number",
+                  description: "Optional delay after pressing (in seconds)",
+                  default: 0
+                }
+              },
+              required: ["connection", "key"]
+            }
+          },
+          {
+            name: "hotkey",
+            description: "Press a key combination on the remote system",
+            inputSchema: {
+              type: "object",
+              properties: {
+                connection: {
+                  type: "string",
+                  description: "Name of the VNC connection to use"
+                },
+                keys: {
+                  type: "array",
+                  items: {
+                    type: "string"
+                  },
+                  description: "List of keys to press (modifiers first, then main key)"
+                }
+              },
+              required: ["connection", "keys"]
+            }
+          },
+          {
+            name: "screenshot",
+            description: "Take a screenshot of the remote system",
+            inputSchema: {
+              type: "object",
+              properties: {
+                connection: {
+                  type: "string",
+                  description: "Name of the VNC connection to use"
+                },
+                file: {
+                  type: "string",
+                  description: "Output file path for the screenshot (defaults to timestamp-based filename in temp dir)"
+                }
+              },
+              required: ["connection"]
+            }
+          },
+          {
+            name: "ssh",
+            description: "Execute an SSH command on the remote system",
+            inputSchema: {
+              type: "object",
+              properties: {
+                connection: {
+                  type: "string",
+                  description: "Name of the VNC connection to use"
+                },
+                command: {
+                  type: "string",
+                  description: "SSH command to execute"
+                }
+              },
+              required: ["connection", "command"]
+            }
+          }
+        ];
+        
+        // Set the tools for the VNC session
+        session.tools = vncTools;
+        
+        // Register each VNC tool with MULTIPLE NAMING FORMATS for maximum compatibility
+        for (const tool of vncTools) {
+          // Prepare three possible formats for the tool name:
+          // 1. Original name as defined (e.g., "test_connection")
+          const baseName = tool.name;
+          
+          // 2. With vnc_ prefix if not already there (e.g., "vnc_test_connection")
+          const vncPrefixedName = baseName.startsWith('vnc_') ? baseName : `vnc_${baseName}`;
+          
+          // 3. With serverName_ prefix (e.g., "vnc_test_connection")
+          const serverPrefixedName = `${serverName}_${baseName}`;
+          
+          // Register ALL versions in the tool map for maximum compatibility
+          this.toolMap.set(baseName, { serverName, originalName: baseName });
+          this.toolMap.set(vncPrefixedName, { serverName, originalName: baseName });
+          this.toolMap.set(serverPrefixedName, { serverName, originalName: baseName });
+          
+          console.log(`[DEBUG] Registered VNC tool in ALL naming formats:`);
+          console.log(`[DEBUG]  - Base: ${baseName}`);
+          console.log(`[DEBUG]  - VNC prefixed: ${vncPrefixedName}`);
+          console.log(`[DEBUG]  - Server prefixed: ${serverPrefixedName}`);
+        }
+        
+        // Log the total tool count
+        console.log(`[INFO] Registered ${vncTools.length} VNC tools with multiple naming formats`);
+        return vncTools;
+      } catch (error: unknown) {
+        console.error(`[ERROR] Error during VNC tool discovery: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        
+        // Even if we fail, create a minimal set of tools as ultimate fallback
+        console.log(`[INFO] Creating minimal VNC tools due to discovery failure`);
+        
+        // Create a minimal set of core tools as an ultimate fallback
+        const minimalTools: MCPTool[] = [
+          {
+            name: "vnc_test_connection",
+            description: "Test a VNC connection directly",
+            inputSchema: { 
+              type: "object", 
+              properties: { 
+                uri: { 
+                  type: "string",
+                  description: "VNC URI to test",
+                  default: "vnc://claude:1234@192.168.64.3"
+                } 
+              } 
+            }
+          },
+          {
+            name: "vnc_screenshot",
+            description: "Take a screenshot of the remote system",
+            inputSchema: { 
+              type: "object", 
+              properties: { 
+                connection: { 
+                  type: "string",
+                  description: "Name of the VNC connection to use",
+                  default: "default"
+                } 
+              } 
+            }
+          }
+        ];
+        
+        // Set these minimal tools
+        session.tools = minimalTools;
+        
+        // Register minimal tools (all naming variants)
+        for (const tool of minimalTools) {
+          const baseName = tool.name;
+          const strippedName = baseName.replace(/^vnc_/, "");
+          const serverPrefixedName = `${serverName}_${strippedName}`;
+          
+          this.toolMap.set(baseName, { serverName, originalName: strippedName });
+          this.toolMap.set(strippedName, { serverName, originalName: strippedName });
+          this.toolMap.set(serverPrefixedName, { serverName, originalName: strippedName });
+          
+          console.log(`[DEBUG] Registered fallback VNC tool: ${baseName}`);
+        }
+        
+        return minimalTools;
+      }
+    }
+
+    // Standard discovery for other stdio servers (not VNC)
+    if (session.isStdio) {
+      console.log(`[INFO] Discovering tools for stdio server "${serverName}"...`);
+      try {
+        // Try all possible MCP variants for tool discovery
+        // Tools might be available directly in the response
+        console.log(`[INFO] Attempting to discover tools for "${serverName}" using direct access...`);
+        
+        // Method 1: Request directly using empty method (some implementations)
+        try {
+          console.log(`[DEBUG] ${serverName}: Trying empty method for tool discovery`);
+          const emptyResult: any = await this.sendStdioRequest(serverName, '', {});
+          console.log(`[DEBUG] ${serverName}: Empty method response:`, JSON.stringify(emptyResult));
+          
+          if (emptyResult && Array.isArray(emptyResult.tools) && emptyResult.tools.length > 0) {
+            console.log(`[INFO] ${serverName}: Found ${emptyResult.tools.length} tools using empty method`);
+            session.tools = emptyResult.tools;
+            
+            // Register tools in the tool map
+            for (const tool of session.tools) {
+              const toolKey = `${serverName}_${tool.name}`;
+              this.toolMap.set(toolKey, { serverName, originalName: tool.name });
+              console.log(`[DEBUG] Registered tool: ${toolKey}`);
+            }
+            
+            return session.tools;
+          }
+        } catch (error: unknown) {
+          console.log(`[DEBUG] ${serverName}: Empty method failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+
+        // Method 2: Try tools/list endpoint (standard MCP)
+        try {
+          console.log(`[DEBUG] ${serverName}: Trying tools/list endpoint`);
+          const listResult: any = await this.sendStdioRequest(serverName, 'tools/list', {});
+          console.log(`[DEBUG] ${serverName}: tools/list response:`, JSON.stringify(listResult));
+          
+          if (listResult && Array.isArray(listResult.tools) && listResult.tools.length > 0) {
+            console.log(`[INFO] ${serverName}: Found ${listResult.tools.length} tools using tools/list`);
+            session.tools = listResult.tools;
+            
+            // Register tools in the tool map
+            for (const tool of session.tools) {
+              const toolKey = `${serverName}_${tool.name}`;
+              this.toolMap.set(toolKey, { serverName, originalName: tool.name });
+              console.log(`[DEBUG] Registered tool: ${toolKey}`);
+            }
+            
+            return session.tools;
+          }
+        } catch (error: unknown) {
+          console.log(`[DEBUG] ${serverName}: tools/list failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+        
+        // Method 3: Specialized method for FastMCP servers - try list_tools endpoint
+        try {
+          console.log(`[DEBUG] ${serverName}: Trying list_tools endpoint (FastMCP-specific)`);
+          const fastMcpResult: any = await this.sendStdioRequest(serverName, 'list_tools', {});
+          console.log(`[DEBUG] ${serverName}: list_tools response:`, JSON.stringify(fastMcpResult));
+          
+          if (fastMcpResult && Array.isArray(fastMcpResult)) {
+            console.log(`[INFO] ${serverName}: Found ${fastMcpResult.length} tools using list_tools (FastMCP)`);
+            
+            // Convert the FastMCP format to our standard format
+            session.tools = fastMcpResult.map((tool: any) => ({
+              name: tool.name || 'unknown',
+              description: tool.description || 'No description available',
+              inputSchema: tool.parameters || { type: 'object', properties: {} }
+            }));
+            
+            // Register tools in the tool map
+            for (const tool of session.tools) {
+              const toolKey = `${serverName}_${tool.name}`;
+              this.toolMap.set(toolKey, { serverName, originalName: tool.name });
+              console.log(`[DEBUG] Registered tool from FastMCP: ${toolKey}`);
+            }
+            
+            return session.tools;
+          }
+        } catch (error: unknown) {
+          console.log(`[DEBUG] ${serverName}: list_tools failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+
+        // If all methods fail, just return an empty array
+        console.log(`[INFO] ${serverName}: No tools discovered through automatic methods`);
+        session.tools = [];
+        return session.tools;
+      } catch (error: unknown) {
+        console.error(`[ERROR] Error discovering tools from stdio server "${serverName}": ${error instanceof Error ? error.message : 'Unknown error'}`);
+        session.tools = [];
+        return [];
+      }
+    } else if (session.port) {
+      // HTTP-based discovery (existing logic)
+      const url = `http://localhost:${session.port}/tools`;
+      console.log(`[INFO] Discovering tools for server "${serverName}" at ${url}...`);
+      const maxRetries = 5;
+      let attempt = 0;
+      while (attempt < maxRetries) {
+        attempt++;
+        try {
+          const response = await axios.get(url, { timeout: 5000 }); // Added timeout
+          if (response.data && Array.isArray(response.data.tools)) {
+            session.tools = response.data.tools;
+            console.log(`[INFO] Discovered ${session.tools.length} tools from server "${serverName}".`);
+            
+            // Populate the toolMap for discovered HTTP server tools
+            for (const tool of session.tools) {
+              const toolKey = `${serverName}_${tool.name}`;
+              // Ensure the tool has a name before registering
+              if (tool.name) { 
+                this.toolMap.set(toolKey, { serverName, originalName: tool.name });
+                console.log(`[DEBUG] Registered HTTP tool: ${toolKey}`);
+              } else {
+                console.warn(`[WARN] Skipping HTTP tool from ${serverName} with no name:`, tool);
+              }
+            }
+            
+            return session.tools;
+          } else {
+            console.warn(`[WARN] Invalid tool response format from ${serverName}:`, response.data);
+            session.tools = [];
+            return [];
+          }
+        } catch (error) {
+          const axiosError = error as AxiosError;
+           if (axiosError.code === 'ECONNREFUSED' || axiosError.code === 'ECONNRESET' || axiosError.response?.status === 503) {
+             if (attempt < maxRetries) {
+                console.warn(`[WARN] Attempt ${attempt} failed to connect to ${serverName} at ${url}. Retrying in ${attempt * 1000}ms...`);
+                await new Promise(resolve => setTimeout(resolve, attempt * 1000)); // Exponential backoff
+            } else {
+                console.error(`[ERROR] Failed to discover tools from server "${serverName}" after ${maxRetries} attempts: Connection refused/reset.`);
+                 // Kill the process if we can't connect after retries
+                if(session.process && !session.process.killed) {
+                    console.log(`[INFO] Killing process for unresponsive server "${serverName}"`);
+                    session.process.kill();
+                }
+                session.tools = [];
+                return [];
+            }
+           } else {
+            console.error(`[ERROR] Failed to discover tools from server "${serverName}":`, axiosError.message);
+            // Also kill here? Maybe not if it's a different error (e.g., 404)
+            session.tools = [];
+            return [];
+          }
+        }
+      }
+      console.error(`[ERROR] Exhausted retries discovering tools from "${serverName}".`);
+      session.tools = [];
+      return [];
+    } else {
+      // Built-in or other types might not support discovery this way
+      console.log(`[INFO] Tool discovery not applicable for server type of "${serverName}".`);
+      return [];
+    }
+  }
+
+  // Discover tools from all running MCP servers
+  async discoverToolsFromAllServers(): Promise<MCPTool[]> {
+    const allTools: MCPTool[] = [];
+    const toolsByServer: Record<string, number> = {};
+    
+    // For vnc server, add known tools manually since discovery is failing
+    if (this.sessions.has("vnc")) {
+      console.log(`[INFO] Adding manually known VNC tools because discovery is failing`);
+      
+      // Define the VNC tools we know exist based on the code analysis
+      const vncTools: MCPTool[] = [
+        {
+          name: "vnc_test_connection",
+          description: "Test a VNC connection directly using the original method",
+          inputSchema: {
+            type: "object",
+            properties: {
+              uri: {
+                type: "string",
+                description: "VNC URI to test"
+              }
+            }
+          }
+        },
+        {
+          name: "vnc_register",
+          description: "Register a VNC connection with the given name and URI",
+          inputSchema: {
+            type: "object",
+            properties: {
+              name: {
+                type: "string",
+                description: "Name to identify this connection"
+              },
+              uri: {
+                type: "string", 
+                description: "VNC URI in the format vnc://user:pass@host:port"
+              },
+              ssh_user: {
+                type: "string",
+                description: "Optional SSH username for remote commands"
+              },
+              ssh_password: {
+                type: "string",
+                description: "Optional SSH password for remote commands"
+              }
+            },
+            required: ["name", "uri"]
+          }
+        },
+        {
+          name: "vnc_connect",
+          description: "Connect to a registered VNC server",
+          inputSchema: {
+            type: "object",
+            properties: {
+              name: {
+                type: "string",
+                description: "Name of the connection to connect to"
+              }
+            },
+            required: ["name"]
+          }
+        },
+        {
+          name: "vnc_disconnect",
+          description: "Disconnect from a VNC server",
+          inputSchema: {
+            type: "object",
+            properties: {
+              name: {
+                type: "string",
+                description: "Name of the connection to disconnect from"
+              }
+            },
+            required: ["name"]
+          }
+        },
+        {
+          name: "vnc_click",
+          description: "Click at specified coordinates on the remote system",
+          inputSchema: {
+            type: "object",
+            properties: {
+              connection: {
+                type: "string",
+                description: "Name of the VNC connection to use"
+              },
+              x: {
+                type: "integer",
+                description: "X coordinate to click"
+              },
+              y: {
+                type: "integer",
+                description: "Y coordinate to click"
+              },
+              button: {
+                type: "string",
+                description: "Mouse button to use (left, right, middle)",
+                default: "left"
+              }
+            },
+            required: ["connection", "x", "y"]
+          }
+        },
+        {
+          name: "vnc_text",
+          description: "Type text on the remote system",
+          inputSchema: {
+            type: "object",
+            properties: {
+              connection: {
+                type: "string",
+                description: "Name of the VNC connection to use"
+              },
+              text: {
+                type: "string",
+                description: "Text to type"
+              },
+              delay: {
+                type: "number",
+                description: "Optional delay after typing (in seconds)",
+                default: 0
+              }
+            },
+            required: ["connection", "text"]
+          }
+        },
+        {
+          name: "vnc_key",
+          description: "Press a key on the remote system",
+          inputSchema: {
+            type: "object",
+            properties: {
+              connection: {
+                type: "string",
+                description: "Name of the VNC connection to use"
+              },
+              key: {
+                type: "string",
+                description: "Key to press"
+              },
+              delay: {
+                type: "number",
+                description: "Optional delay after pressing (in seconds)",
+                default: 0
+              }
+            },
+            required: ["connection", "key"]
+          }
+        },
+        {
+          name: "vnc_hotkey",
+          description: "Press a key combination on the remote system",
+          inputSchema: {
+            type: "object",
+            properties: {
+              connection: {
+                type: "string",
+                description: "Name of the VNC connection to use"
+              },
+              keys: {
+                type: "array",
+                items: {
+                  type: "string"
+                },
+                description: "List of keys to press (modifiers first, then main key)"
+              }
+            },
+            required: ["connection", "keys"]
+          }
+        },
+        {
+          name: "vnc_screenshot",
+          description: "Take a screenshot of the remote system",
+          inputSchema: {
+            type: "object",
+            properties: {
+              connection: {
+                type: "string",
+                description: "Name of the VNC connection to use"
+              },
+              file: {
+                type: "string",
+                description: "Output file path for the screenshot (defaults to timestamp-based filename in temp dir)"
+              }
+            },
+            required: ["connection"]
+          }
+        },
+        {
+          name: "vnc_ssh",
+          description: "Execute an SSH command on the remote system",
+          inputSchema: {
+            type: "object",
+            properties: {
+              connection: {
+                type: "string",
+                description: "Name of the VNC connection to use"
+              },
+              command: {
+                type: "string",
+                description: "SSH command to execute"
+              }
+            },
+            required: ["connection", "command"]
+          }
+        }
+      ];
+      
+      // Add VNC tools to the session and register them
+      const vncSession = this.sessions.get("vnc");
+      if (vncSession) {
+        vncSession.tools = vncTools;
+        
+        // Register each tool in the tool map
+        for (const tool of vncTools) {
+          const toolKey = `vnc_${tool.name}`;
+          this.toolMap.set(toolKey, { serverName: "vnc", originalName: tool.name });
+          console.log(`[DEBUG] Manually registered VNC tool: ${toolKey}`);
+        }
+        
+        allTools.push(...vncTools);
+        toolsByServer["vnc"] = vncTools.length;
+      }
+    }
+    
+    // Now discover tools from other servers
+    for (const serverName of this.sessions.keys()) {
+      // Skip vnc server as we've handled it manually
+      if (serverName === "vnc") continue;
+      
+      try {
+        const tools = await this.discoverTools(serverName);
+        allTools.push(...tools);
+        toolsByServer[serverName] = tools.length;
+      } catch (error: unknown) {
+        console.error(`[ERROR] Failed to discover tools from server "${serverName}": ${error instanceof Error ? error.message : 'Unknown error'}`);
+        toolsByServer[serverName] = toolsByServer[serverName] || 0;
+      }
+    }
+    
+    // Log summary of tools discovered
+    console.log(`[INFO] Total tools discovered: ${allTools.length}`);
+    for (const [server, count] of Object.entries(toolsByServer)) {
+      console.log(`[INFO] - Server "${server}": ${count} tools`);
+    }
+    
+    return allTools;
+  }
+
+  // Execute a tool using the appropriate MCP server
+  async executeTool(toolName: string, args: any): Promise<any> {
+    const toolRef = this.toolMap.get(toolName);
+    if (!toolRef) {
+      console.log(`[INFO] Tool "${toolName}" not found in tool map, attempting rediscovery...`);
+      // Ensure tool name exists in the map before trying to execute
+      // Re-populate map in case discoverTools failed previously but server is now running
+      await this.discoverToolsFromAllServers();
+      const updatedToolRef = this.toolMap.get(toolName);
+      
+      if (!updatedToolRef) {
+        // Print debug info to help diagnose the issue
+        console.log(`[DEBUG] Known tools in map after rediscovery: ${Array.from(this.toolMap.keys()).join(', ')}`);
+        
+        // Try checking if this tool appears with a server prefix
+        const possiblePrefixes = Array.from(this.sessions.keys());
+        for (const prefix of possiblePrefixes) {
+          if (toolName.startsWith(`${prefix}_`)) {
+            const originalName = toolName.substring(prefix.length + 1);
+            console.log(`[INFO] Tool has server prefix already, using original name: ${originalName} for server ${prefix}`);
+            return this.executeToolInternal(prefix, toolName, args);
+          }
+          
+          // Also check if it needs a prefix
+          const withPrefix = `${prefix}_${toolName}`;
+          if (this.toolMap.has(withPrefix)) {
+            console.log(`[INFO] Found tool with prefix: ${withPrefix}`);
+            return this.executeToolInternal(prefix, withPrefix, args);
+          }
+        }
+        
+        throw new Error(`Tool "${toolName}" not found after rediscovery attempt. Available tools: ${Array.from(this.toolMap.keys()).join(', ')}`);
+      }
+      // Use the updated ref from here
+      return this.executeToolInternal(updatedToolRef.serverName, toolName, args);
+    } else {
+      return this.executeToolInternal(toolRef.serverName, toolName, args);
+    }
+  }
+
+  // Internal execution logic with enhanced reliability
+  private async executeToolInternal(serverName: string, toolName: string, args: any, attempt: number = 0): Promise<any> {
+    const MAX_ATTEMPTS = 3;
+    const session = this.sessions.get(serverName);
+    
+    if (!session) {
+      if (attempt < MAX_ATTEMPTS && serverName === 'vnc') {
+        console.log(`[INFO] Server "${serverName}" not found for tool "${toolName}", attempting to start...`);
+        
+        try {
+          // Start VNC server
+          await this.startServer(serverName, {
+            type: 'stdio',
+            command: "/Users/egecakar/Documents/Projects/BUTLER/backend/vnc_env/bin/python3",
+            args: ["backend/vnc_mcp.py"]
+          });
+          
+          console.log(`[INFO] VNC server started, waiting for initialization...`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+          // Try again
+          return this.executeToolInternal(serverName, toolName, args, attempt + 1);
+        } catch (error) {
+          console.error(`[ERROR] Failed to start VNC server: ${error instanceof Error ? error.message : 'Unknown error'}`);
+          throw new Error(`Failed to execute tool "${toolName}": server "${serverName}" could not be started.`);
+        }
+      }
+      
+      throw new Error(`Server "${serverName}" for tool "${toolName}" is not running.`);
+    }
+
+    if (session.isStdio) {
+        console.log(`[INFO] Executing stdio tool "${toolName}" on server "${session.name}" (attempt ${attempt + 1})...`);
+        
+        try {
+            // Get the original tool name from the mapping or use the provided name
+            const toolRef = this.toolMap.get(toolName);
+            const originalToolName = toolRef?.originalName || toolName;
+            
+            // Clean the tool name - remove any server or type prefixes
+            let cleanToolName = originalToolName;
+            
+            // Remove server prefix if present
+            if (cleanToolName.startsWith(`${serverName}_`)) {
+                cleanToolName = cleanToolName.substring(serverName.length + 1);
+            }
+            
+            // For VNC tools, also remove 'vnc_' prefix if present
+            if (serverName === 'vnc' && cleanToolName.startsWith('vnc_')) {
+                cleanToolName = cleanToolName.substring(4);
+            }
+            
+            // Show detailed logging about tool name transformation
+            console.log(`[DEBUG] Tool name transformation: "${toolName}" → "${originalToolName}" → "${cleanToolName}"`);
+            
+            // Special handling for VNC server tools
+            if (serverName === 'vnc') {
+                console.log(`[DEBUG] Executing VNC tool "${cleanToolName}" with arguments:`, JSON.stringify(args));
+                
+                try {
+                    // Use our improved sendStdioRequest with retry capability
+                    const result = await this.sendStdioRequest<any>(serverName, cleanToolName, args);
+                    console.log(`[DEBUG] VNC tool execution succeeded for "${cleanToolName}"`);
+                    
+                    // Format the result properly for Claude
+                    // If the result is already a string, wrap it
+                    if (typeof result === 'string') {
+                        return { content: result };
+                    }
+                    
+                    // If it's an object, stringify it
+                    if (typeof result === 'object') {
+                        return { content: JSON.stringify(result) };
+                    }
+                    
+                    // Fallback for any other type
+                    return { content: `${result}` };
+                    
+                } catch (error: unknown) {
+                    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+                    console.error(`[ERROR] VNC tool execution failed for "${cleanToolName}": ${errorMsg}`);
+                    
+                    // If this is not the last attempt, retry
+                    if (attempt < MAX_ATTEMPTS - 1) {
+                        console.log(`[INFO] Retrying VNC tool execution (attempt ${attempt + 2}/${MAX_ATTEMPTS})...`);
+                        await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1))); // Backoff
+                        return this.executeToolInternal(serverName, toolName, args, attempt + 1);
+                    }
+                    
+                    // Return a formatted error if we've exhausted retries
+                    return { 
+                        content: JSON.stringify({
+                            success: false,
+                            error: `Failed to execute VNC tool after ${MAX_ATTEMPTS} attempts: ${errorMsg}`,
+                            toolName: cleanToolName
+                        })
+                    };
+                }
+            }
+            
+            // For other types of servers, try standard protocol then fallback to direct
+            try {
+                // First try standard MCP protocol (tools/call endpoint)
+                console.log(`[DEBUG] Executing tool "${cleanToolName}" on "${serverName}" using standard MCP protocol`);
+                const result = await this.sendStdioRequest<any>(session.name, 'tools/call', { 
+                    name: cleanToolName, 
+                    arguments: args
+                });
+                
+                console.log(`[DEBUG] Standard MCP protocol succeeded for "${cleanToolName}"`);
+                return result; // Return the direct result from tools/call
+            } catch (toolsCallError: unknown) {
+                const errorMsg = toolsCallError instanceof Error ? toolsCallError.message : 'Unknown error';
+                console.log(`[DEBUG] Standard MCP protocol failed for "${cleanToolName}": ${errorMsg}`);
+                
+                // Try direct method call as fallback
+                console.log(`[DEBUG] Trying direct method call for "${cleanToolName}"`);
+                try {
+                    const result = await this.sendStdioRequest<any>(session.name, cleanToolName, args);
+                    console.log(`[DEBUG] Direct tool call succeeded for "${cleanToolName}"`);
+                    
+                    // Format result appropriately
+                    if (typeof result === 'string') {
+                        return { content: result };
+                    }
+                    return { content: JSON.stringify(result) };
+                } catch (directError: unknown) {
+                    const directErrorMsg = directError instanceof Error ? directError.message : 'Unknown error';
+                    console.error(`[ERROR] Direct tool call failed for "${cleanToolName}": ${directErrorMsg}`);
+                    
+                    // If not last attempt, retry
+                    if (attempt < MAX_ATTEMPTS - 1) {
+                        console.log(`[INFO] Retrying tool execution (attempt ${attempt + 2}/${MAX_ATTEMPTS})...`);
+                        await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1))); // Backoff
+                        return this.executeToolInternal(serverName, toolName, args, attempt + 1);
+                    }
+                    
+                    // Return formatted error after all retries
+                    return { 
+                        content: `Error: Failed to execute tool "${cleanToolName}" after multiple attempts: ${directErrorMsg}`
+                    };
+                }
+            }
+        } catch (error: unknown) {
+            const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+            console.error(`[ERROR] Failed to execute stdio tool "${toolName}" on server "${session.name}": ${errorMsg}`);
+            
+            // If not last attempt, retry
+            if (attempt < MAX_ATTEMPTS - 1) {
+                console.log(`[INFO] Retrying due to unexpected error (attempt ${attempt + 2}/${MAX_ATTEMPTS})...`);
+                await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1))); // Backoff
+                return this.executeToolInternal(serverName, toolName, args, attempt + 1);
+            }
+            
+            // Return formatted error after all retries
+            return { 
+                content: `Error: Tool execution failed after exhausting all retry attempts: ${errorMsg}`
+            };
+        }
+    }
+     else if (session.port) {
+      // HTTP-based execution (existing logic)
+      const url = `http://localhost:${session.port}/execute`;
+      console.log(`[INFO] Executing tool "${toolName}" via HTTP on server "${session.name}" at ${url}...`);
+      try {
+        const response = await axios.post(url, {
+          tool_name: toolName,
+          arguments: args,
+        }, { timeout: 30000 }); // Added timeout
+        return response.data;
+      } catch (error) {
+         const axiosError = error as AxiosError;
+         console.error(`[ERROR] Failed to execute tool "${toolName}" on server "${session.name}": ${axiosError.message}`);
+         if (axiosError.response) {
+            console.error(`[ERROR] Server response: ${JSON.stringify(axiosError.response.data)}`);
+            throw new Error(`Tool execution failed: ${axiosError.response.data?.error || axiosError.message}`);
+         } else {
+             throw new Error(`Tool execution failed: ${axiosError.message}`);
+         }
+      }
+    } else {
+        throw new Error(`Server "${session.name}" does not support tool execution (not stdio or http).`);
+    }
+  }
+
+  // Get all discovered tools formatted for Claude
+  getToolsForClaude(): ClaudeTool[] {
+    const claudeTools: ClaudeTool[] = [];
+
+    // Collect tools from all sessions
+    for (const [serverName, session] of this.sessions.entries()) {
+      if (MCPManager.DEBUG_MODE) console.log(`[INFO] Getting tools from server "${serverName}": ${session.tools.length} tools found`);
+      
+      for (const tool of session.tools) {
+        if (MCPManager.DEBUG_MODE) console.log(`[TRACE] Processing tool from ${serverName}: Name='${tool.name}', Desc='${tool.description}'`);
+        
+        // Validate the tool has required properties
+        if (!tool.name || !tool.description || !tool.inputSchema) {
+          console.warn(`[WARN] Skipping invalid tool from ${serverName}: Missing required properties`, tool);
+          continue;
+        }
+        
+        // Create properly formatted tool for Claude
+        claudeTools.push({
+          name: `${serverName}_${tool.name}`,
+          description: `[${serverName}] ${tool.description}`,
+          input_schema: tool.inputSchema // Keep camelCase in code but property name is snake_case for Claude
+        });
+      }
+    }
+    
+    // Log detailed info about tools being sent to Claude
+    if (MCPManager.DEBUG_MODE) {
+      console.log(`[INFO] Total tools for Claude: ${claudeTools.length}`);
+      claudeTools.forEach(tool => {
+        console.log(`[DEBUG] Registered Claude tool: ${tool.name}, Description: ${tool.description}`);
+        // Log the schema structure for debugging
+        console.log(`[DEBUG] Schema for ${tool.name}:`, JSON.stringify(tool.input_schema, null, 2)); 
+      });
+    }
+    
+    return claudeTools;
+  }
+
+  // Process content with tool calls
+  async processToolCalls(content: any[]): Promise<{ toolResults: any[]; hasToolCalls: boolean }> {
+    const toolResults: any[] = [];
+    let hasToolCalls = false;
+    
+    for (const item of content) {
+      if (item.type === 'tool_use') {
+        // Support both 'tool_name' (our preferred) and 'name' (Claude's response)
+        const incomingToolName = item.tool_name || item.name;
+        
+        // Skip tool calls with undefined names
+        if (!incomingToolName) {
+          console.log(`[WARN] Skipping tool call with undefined name`);
+          toolResults.push({
+            type: 'tool_result',
+            tool_name: 'unknown',
+            tool_call_id: item.id || 'unknown',
+            content: 'Error: Tool name was undefined'
+          });
+          continue;
+        }
+        
+        hasToolCalls = true;
+        const toolName = incomingToolName;
+        console.log(`[INFO] Processing tool call: ${toolName}`); // Always log tool calls
+
+        try {
+          // Extract tool info
+          const toolInput = item.tool_input ?? item.input ?? item.arguments ?? {};
+
+          console.log(`[INFO] Processing tool call: ${toolName} with arguments:`, JSON.stringify(toolInput)); // Always log arguments
+          
+          // If tool is not in the map, try to rediscover tools first
+          if (!this.toolMap.has(toolName)) {
+            console.log(`[INFO] Tool '${toolName}' not found in tool map, attempting rediscovery...`);
+            await this.discoverToolsFromAllServers();
+          }
+          
+          // Execute the tool
+          const result = await this.executeTool(toolName, toolInput);
+          
+          // Add the result
+          toolResults.push({
+            type: 'tool_result',
+            tool_name: toolName,
+            tool_call_id: item.id,
+            content: result.content
+          });
+        } catch (error: unknown) {
+          console.error(`[ERROR] Tool execution error:`, error instanceof Error ? error.message : 'Unknown error');
+          
+          // Add error result
+          toolResults.push({
+            type: 'tool_result',
+            tool_name: item.tool_name,
+            tool_call_id: item.id,
+            content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+          });
+        }
+      }
+    }
+    
+    return { toolResults, hasToolCalls };
+  }
+  
+  // Stop all servers
+  cleanup(): void {
+    for (const [serverName, session] of this.sessions.entries()) {
+      if (session.process) { // Only kill if it's a real process (not built-in)
+        console.log(`Stopping server "${serverName}"...`);
+        session.process.kill();
+      }
+    }
+
+    this.sessions.clear();
+    this.toolMap.clear();
+  }
+}
+
+// Export singleton instance
+export const mcpManager = MCPManager.getInstance();

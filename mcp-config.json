@@ -21,7 +21,7 @@
       "args": [
         "-y",
         "@modelcontextprotocol/server-filesystem",
-        "/Users/liazheng/Downloads"
+        "/Users/egecakar/Downloads"
       ]
     },
     "google-calendar": {
