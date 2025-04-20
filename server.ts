@@ -13,9 +13,17 @@ dotenv.config({ path: '.env.local' });
 // Debug environment variables
 console.log('[DEBUG] Environment variables loaded from:', process.env.DOTENV_PATH || '.env.local');
 console.log('[DEBUG] CLAUDE_API_KEY present:', !!process.env.CLAUDE_API_KEY);
+console.log('[DEBUG] ELEVENLABS_API_KEY present:', !!process.env.ELEVENLABS_API_KEY);
+
+// Trim whitespace from API keys
 if (process.env.CLAUDE_API_KEY) {
   process.env.CLAUDE_API_KEY = process.env.CLAUDE_API_KEY.trim();
   console.log('[DEBUG] CLAUDE_API_KEY format:', process.env.CLAUDE_API_KEY.substring(0, 5) + '...');
+}
+
+if (process.env.ELEVENLABS_API_KEY) {
+  process.env.ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY.trim();
+  console.log('[DEBUG] ELEVENLABS_API_KEY format:', process.env.ELEVENLABS_API_KEY.substring(0, 5) + '...');
 }
 
 const app = express();
@@ -258,11 +266,18 @@ app.get('/api/elevenlabs/test', async (req, res) => {
 
 // ElevenLabs Text-to-Speech API endpoint
 app.post('/api/elevenlabs/tts', (req, res) => {
-  console.log('[INFO] ElevenLabs TTS request received');
+  console.log('[DEBUG] ======= ElevenLabs TTS REQUEST START =======');
+  console.log('[DEBUG] ElevenLabs TTS request received at:', new Date().toISOString());
+  console.log('[DEBUG] Request headers:', req.headers);
+  
   const { text, voiceId = 'nPczCjzI2devNBz1zQrb' } = req.body;
+  console.log('[DEBUG] Voice ID:', voiceId);
+  console.log('[DEBUG] Text length:', text?.length || 0, 'characters');
+  console.log('[DEBUG] Text preview:', text?.substring(0, 50) + '...');
+  
   const elevenLabsApiKey = process.env.ELEVENLABS_API_KEY;
-
-  console.log('[INFO] Checking ElevenLabs API key...');
+  console.log('[DEBUG] ElevenLabs API key present:', !!elevenLabsApiKey);
+  
   if (!elevenLabsApiKey) {
     console.error('[ERROR] ElevenLabs API key not configured');
     return res.status(500).json({ error: 'ElevenLabs API key not configured' });
@@ -277,6 +292,12 @@ app.post('/api/elevenlabs/tts', (req, res) => {
   console.log(`[INFO] Using voice ID: ${voiceId}`);
   console.log(`[INFO] Text length: ${text.length} characters`);
   console.log('[INFO] Using ElevenLabs API key format:', elevenLabsApiKey.substring(0, 5) + '...' + elevenLabsApiKey.substring(elevenLabsApiKey.length - 5));
+  
+  // Trim text if it's too long
+  const maxTextLength = 1000;
+  const trimmedText = text.length > maxTextLength ? text.substring(0, maxTextLength) + '...' : text;
+  console.log(`[INFO] Text ${text.length > maxTextLength ? 'trimmed from ' + text.length + ' to ' + maxTextLength + ' characters' : 'not trimmed'}`);
+  
 
   const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`;
   console.log(`[INFO] ElevenLabs endpoint URL: ${url}`);
@@ -290,7 +311,7 @@ app.post('/api/elevenlabs/tts', (req, res) => {
       'xi-api-key': elevenLabsApiKey
     },
     body: JSON.stringify({
-      text,
+      text: trimmedText,
       model_id: 'eleven_monolingual_v1',
       voice_settings: {
         stability: 0.5,
@@ -301,11 +322,21 @@ app.post('/api/elevenlabs/tts', (req, res) => {
 
   console.log('[INFO] Sending request to ElevenLabs API...');
   
+  console.log('[DEBUG] Starting ElevenLabs API request with full options:', {
+    url,
+    method: requestOptions.method,
+    headers: requestOptions.headers,
+    bodyLength: JSON.stringify(requestOptions.body).length
+  });
+  
+  console.time('[DEBUG] ElevenLabs API total request time');
   // Use a promise-based approach instead of async/await
   fetch(url, requestOptions)
     .then(response => {
-      console.log(`[INFO] ElevenLabs API response status: ${response.status}`);
-      console.log(`[INFO] Response headers:`, Object.fromEntries([...response.headers.entries()]));
+      console.timeEnd('[DEBUG] ElevenLabs API total request time');
+      console.log(`[DEBUG] ElevenLabs API response received at: ${new Date().toISOString()}`);
+      console.log(`[DEBUG] ElevenLabs API response status: ${response.status}`);
+      console.log(`[DEBUG] Response headers:`, Object.fromEntries([...response.headers.entries()]));
 
       if (!response.ok) {
         return response.text().then(text => {
@@ -327,11 +358,15 @@ app.post('/api/elevenlabs/tts', (req, res) => {
         });
       }
 
-      console.log('[INFO] ElevenLabs API response successful, processing audio...');
+      console.log('[DEBUG] ElevenLabs API response successful, processing audio...');
+      console.time('[DEBUG] Audio buffer processing time');
       return response.arrayBuffer();
     })
     .then(audioBuffer => {
-      console.log(`[INFO] Audio buffer size: ${audioBuffer.byteLength} bytes`);
+      console.timeEnd('[DEBUG] Audio buffer processing time');
+      console.log(`[DEBUG] Audio buffer received at: ${new Date().toISOString()}`);
+      console.log(`[DEBUG] Audio buffer size: ${audioBuffer.byteLength} bytes`);
+      console.log(`[DEBUG] Audio buffer type: ${typeof audioBuffer}`);
       
       if (audioBuffer.byteLength === 0) {
         console.error('[ERROR] Empty audio buffer received from ElevenLabs');
@@ -339,10 +374,18 @@ app.post('/api/elevenlabs/tts', (req, res) => {
         throw new Error('Empty audio buffer');
       }
 
-      console.log('[INFO] Sending audio response to client...');
+      console.log('[DEBUG] Preparing to send audio response to client...');
       res.setHeader('Content-Type', 'audio/mpeg');
-      res.send(Buffer.from(audioBuffer));
-      console.log('[INFO] Audio response sent successfully');
+      res.setHeader('Content-Length', audioBuffer.byteLength.toString());
+      res.setHeader('X-Audio-Size', audioBuffer.byteLength.toString());
+      res.setHeader('X-Audio-Source', 'ElevenLabs');
+      
+      const buffer = Buffer.from(audioBuffer);
+      console.log('[DEBUG] Created Buffer from ArrayBuffer, size:', buffer.length);
+      
+      res.send(buffer);
+      console.log('[DEBUG] Audio response sent successfully at:', new Date().toISOString());
+      console.log('[DEBUG] ======= ElevenLabs TTS REQUEST END =======');
     })
     .catch(error => {
       if (error.message === 'API response not OK' || error.message === 'Empty audio buffer') {

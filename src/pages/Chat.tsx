@@ -19,7 +19,10 @@ export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [fromSpeech, setFromSpeech] = useState(false)
+  const [audioSrc, setAudioSrc] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const audioRef = useRef<HTMLAudioElement>(null)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -131,7 +134,7 @@ export default function Chat() {
     if (!input.trim() || isLoading) return
     
     const trimmedInput = input.trim()
-    console.log('Submitting message:', trimmedInput)
+    console.log('Submitting message:', trimmedInput, 'fromSpeech:', fromSpeech)
   
     const userMessage: Message = {
       id: crypto.randomUUID(),
@@ -158,7 +161,7 @@ export default function Chat() {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: 'claude-3-opus-20240229',
+          model: 'claude-3-7-sonnet-20250219',
           messages: [
             { role: 'user', content: trimmedInput }
           ]
@@ -189,6 +192,64 @@ export default function Chat() {
       }
   
       setMessages(prev => [...prev, butlerMessage])
+      
+      // If the user message was from speech, convert the response to speech
+      if (fromSpeech) {
+        try {
+          console.log('[DEBUG] Converting response to speech via ElevenLabs...')
+          console.log('[DEBUG] Response text length:', responseText.length)
+          console.log('[DEBUG] Response text preview:', responseText.substring(0, 100) + '...')
+          
+          console.time('[DEBUG] ElevenLabs API call')
+          const ttsResponse = await fetch('http://localhost:3001/api/elevenlabs/tts', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              text: responseText,
+              voiceId: 'nPczCjzI2devNBz1zQrb' // Default voice ID
+            })
+          })
+          console.timeEnd('[DEBUG] ElevenLabs API call')
+          
+          console.log('[DEBUG] ElevenLabs API response status:', ttsResponse.status)
+          console.log('[DEBUG] ElevenLabs API response headers:', Object.fromEntries([...ttsResponse.headers.entries()]))
+          
+          if (ttsResponse.ok) {
+            console.time('[DEBUG] Processing audio blob')
+            const audioBlob = await ttsResponse.blob()
+            console.log('[DEBUG] Audio blob size:', audioBlob.size, 'bytes')
+            console.log('[DEBUG] Audio blob type:', audioBlob.type)
+            
+            const audioUrl = URL.createObjectURL(audioBlob)
+            console.log('[DEBUG] Created audio URL:', audioUrl)
+            setAudioSrc(audioUrl)
+            
+            // Play the audio
+            if (audioRef.current) {
+              console.log('[DEBUG] Playing audio...')
+              audioRef.current.play().then(() => {
+                console.log('[DEBUG] Audio playback started')
+              }).catch(error => {
+                console.error('[DEBUG] Audio playback error:', error)
+              })
+            } else {
+              console.error('[DEBUG] Audio ref is null, cannot play audio')
+            }
+            console.timeEnd('[DEBUG] Processing audio blob')
+          } else {
+            console.error('[DEBUG] TTS API error:', ttsResponse.status)
+            const errorText = await ttsResponse.text()
+            console.error('[DEBUG] TTS API error details:', errorText)
+          }
+        } catch (ttsError) {
+          console.error('TTS error:', ttsError)
+        }
+      }
+      
+      // Reset the fromSpeech flag
+      setFromSpeech(false)
     } catch (error) {
       console.error('Claude API error:', error)
       console.error('Error details:', JSON.stringify(error, null, 2))
@@ -212,7 +273,18 @@ export default function Chat() {
 
   return (
     <div className="flex h-[calc(100vh-12rem)] flex-col">
-    <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      {/* Audio player for TTS responses */}
+      {audioSrc && (
+        <audio 
+          ref={audioRef}
+          src={audioSrc} 
+          className="hidden" // Hidden but functional
+          controls={false} 
+          autoPlay={true}
+          onEnded={() => setAudioSrc(null)}
+        />
+      )}
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
       {messages.map((message) => (
         <div
           key={message.id}
@@ -245,6 +317,8 @@ export default function Chat() {
         onTranscription={(text: string) => {
           console.log('Transcription received in Chat component:', text);
           setInput(text);
+          // Set the fromSpeech flag to true
+          setFromSpeech(true);
           // Directly call handleSubmit after a short delay
           setTimeout(() => {
             console.log('Auto-submitting from Chat component');
