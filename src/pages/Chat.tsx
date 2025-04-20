@@ -229,7 +229,7 @@ export default function Chat() {
                       }
                     }
                   }
-                }, i * 15); // 15ms per character
+                }, i * 5);
               }
             } catch (error) {
               console.error('Error in auto-submit response:', error)
@@ -465,7 +465,7 @@ export default function Chat() {
             // Reset the fromSpeech flag
             setFromSpeech(false)
           }
-        }, i * 15); // 15ms per character
+        }, i * 5);
       }
     } catch (error) {
       console.error('Claude API error:', error)

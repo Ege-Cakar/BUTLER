@@ -11,6 +11,7 @@ import { Link, useLocation } from 'react-router-dom'
 const navigation = [
   { name: 'Dashboard', href: '/', icon: HomeIcon },
   { name: 'Chat', href: '/chat', icon: ChatBubbleLeftRightIcon },
+  { name: 'Clean', href: '/clean', icon: FolderIcon },
 ]
 
 export default function Layout({ children }: { children: React.ReactNode }) {

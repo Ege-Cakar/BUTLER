@@ -15,6 +15,15 @@
         "/Users/stellali/Documents/Projects/BUTLER/memory.jsonl"
       ]
     },
+    "filesystem": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/liazheng/Downloads"
+      ]
+    },
     "google-calendar": {
       "type": "stdio",
       "command": "node",
