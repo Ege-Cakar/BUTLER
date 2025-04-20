@@ -5,6 +5,7 @@ import {
   HomeIcon,
   ChatBubbleLeftRightIcon,
   XMarkIcon,
+  FolderIcon,
 } from '@heroicons/react/24/outline'
 import { Link, useLocation } from 'react-router-dom'
 
